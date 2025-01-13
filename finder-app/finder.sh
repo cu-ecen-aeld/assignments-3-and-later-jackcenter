@@ -2,24 +2,23 @@
 # Finder app
 # Author: Jack Center
 
-# arg1 path to a directory: filesdir
-# arg2 text to search for: searchstr
-filesdir=$1
-searchstr=$2 
+filesdir=$1     # The directory to search
+searchstr=$2    # The string to search for
 
 # return 1 if either argument is missing 
 if ! [ $# -eq 2 ]
 then
+    echo "Error: Expected 2 arguments, got ${#}."
     exit 1
 fi
 
 # return 1 "filesdir does not represent a diretory on the filesystem"
 if ! [ -d ${filesdir} ]
 then
+    echo "Error: The directory '${filesdir}' does not exist."
     exit 1
 fi
 
-# prints The number of files are X and the number of matching lines are Y"
 files_with_string=$(grep -rl "$searchstr" "$filesdir" | wc -l)
 lines_with_string=$(grep -r "$searchstr" "$filesdir" | wc -l)
 

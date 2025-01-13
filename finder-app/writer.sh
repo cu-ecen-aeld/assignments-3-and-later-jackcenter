@@ -2,14 +2,13 @@
 # Writer
 # Author: Jack Center
 
-# arg1 path to a directory: filesdir
-# arg2 text to search for: searchstr
-writefile=$1
-writestr=$2 
+writefile=$1    # File to write to
+writestr=$2     # String to write
 
 # return 1 if either argument is missing 
 if ! [ $# -eq 2 ]
 then
+    echo "Error: The directory '${filesdir}' does not exist."
     exit 1
 fi
 
