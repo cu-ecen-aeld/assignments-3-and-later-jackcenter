@@ -1,8 +1,8 @@
 
-TARGET_EXEC := writer_app
+TARGET_EXEC := writer
 
 BUILD_DIR := ./build
-SRC_DIR := ./finder-app
+SRC_DIR := ./
 
 SRCS := $(wildcard $(SRC_DIR)/*.c)	# Find all c files
 OBJS := $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)	# make object files for all c files
@@ -17,7 +17,7 @@ ifneq ($(CROSS_COMPILE),)
 endif
 
 # Target to build final executable on native system
-$(BUILD_DIR)/$(TARGET_EXEC): $(OBJS)
+$(SRC_DIR)/$(TARGET_EXEC): $(OBJS)
 	$(CC) $(OBJS) -o $@
 
 # Target to build the object files
@@ -27,4 +27,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 
 .PHONY: clean
 clean:
-	rm -r $(BUILD_DIR)
+	@if [ -d "${BUILD_DIR}" ]; \
+	then \
+		rm -r ${BUILD_DIR}; \
+	fi
