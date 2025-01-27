@@ -1,3 +1,8 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include "systemcalls.h"
 
 /**
@@ -9,15 +14,13 @@
 */
 bool do_system(const char *cmd)
 {
+    int retval = system(cmd);
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    if(retval == 0) {
+        return true;
+    }
 
-    return true;
+    return false;
 }
 
 /**
@@ -44,6 +47,8 @@ bool do_exec(int count, ...)
     {
         command[i] = va_arg(args, char *);
     }
+    va_end(args);
+
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
@@ -58,10 +63,54 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    
+    pid_t pid;
 
-    va_end(args);
+    pid = fork();
 
-    return true;
+    // Error
+    if (pid == -1) {
+        return false;
+    } 
+    
+    // The child
+    if (pid == 0) {
+        // Parse command for execv arguments
+        const char * command_to_execute = command[0];
+        char * arguments[count];
+        for (size_t i = 0; i < count; ++i) {
+            arguments[i] = command[i+1];
+        }
+
+        execv(command_to_execute, arguments);
+
+        // If execv fails, return an error
+        return false;
+    }
+
+    // The parent
+    int status;
+    const int return_pid = waitpid(pid, &status, 0);
+
+    // waitpid failed
+    if (return_pid == -1) {
+        printf("1\r\n");
+        return false;
+    }
+    
+    if (WIFEXITED(status)) {
+        const int exit_code = WEXITSTATUS((status));
+        printf("2\r\n");
+        if (exit_code == 0) {
+            printf("2T\r\n");
+            return true;
+        }
+        return false;
+    }
+
+    printf("3\r\n");
+
+    return false;
 }
 
 /**
