@@ -7,6 +7,27 @@
 #include "systemcalls.h"
 
 /**
+ * @brief Checks the status from waitpid to check for successful process completion.
+ * @param status the status from a call to waitpid.
+ * @return true if the process returned normally with exit code of 0
+ * @return false otherwise 
+ */
+static bool is_command_successful(const int status) {
+    // If the process exited normally
+    if (WIFEXITED(status)) {
+        const int exit_code = WEXITSTATUS((status));
+
+        // If the process exited successfully
+        if (exit_code == 0) {
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+/**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
  *   successfully using the system() call, false if an error occurred,
@@ -19,21 +40,6 @@ bool do_system(const char *cmd)
 
     if(retval == 0) {
         return true;
-    }
-
-    return false;
-}
-
-bool is_command_successful(const int status) {
-    // If the process exited normally
-    if (WIFEXITED(status)) {
-        const int exit_code = WEXITSTATUS((status));
-
-        // If the process exited successfully
-        if (exit_code == 0) {
-            return true;
-        }
-        return false;
     }
 
     return false;
@@ -69,32 +75,22 @@ bool do_exec(int count, ...)
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
     command[count] = command[count];
-
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
-    
+   
     pid_t pid = fork();
     if (pid == -1) {
         perror("fork");
         return false;
     } 
     
-    // The child
+    // The child process
     if (pid == 0) {
         execv(command[0], command);
 
         // If execv fails, return an error
-        return false;
+        exit (-1);
     }
 
-    // The parent
+    // The parent process
     int status;
     // If function fails
     if (waitpid(pid, &status, 0) == -1) {
@@ -126,24 +122,13 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     // and may be removed
     command[count] = command[count];
 
-
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
-    
-
-
     pid_t pid = fork();
     if (pid == -1) {
         perror("fork");
         return false;
     } 
     
-    // The child
+    // The child process
     if (pid == 0) {
         const int fd = creat(outputfile, 0644);
         if (fd == -1) {
@@ -151,7 +136,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
             return false;
         }
 
-        // redirect standard out
+        // redirect to standard out
         if (dup2(fd, 1) == -1) {
             perror("dup2");
             return false;
@@ -161,16 +146,16 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         execv(command[0], command);
 
         // If execv fails, return an error
-        return false;
+        exit (-1);
     }
 
-    // The parent
+    // The parent process
     int status;
-    // If function fails
     if (waitpid(pid, &status, 0) == -1) {
         perror("waitpid");
         return false;
     }
 
     return is_command_successful(status);
+    return true;
 }
