@@ -1,1 +1,1 @@
-home is /home/jack-center
+home is $HOME

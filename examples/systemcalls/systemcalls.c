@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
@@ -18,6 +19,21 @@ bool do_system(const char *cmd)
 
     if(retval == 0) {
         return true;
+    }
+
+    return false;
+}
+
+bool is_command_successful(const int status) {
+    // If the process exited normally
+    if (WIFEXITED(status)) {
+        const int exit_code = WEXITSTATUS((status));
+
+        // If the process exited successfully
+        if (exit_code == 0) {
+            return true;
+        }
+        return false;
     }
 
     return false;
@@ -64,25 +80,15 @@ bool do_exec(int count, ...)
  *
 */
     
-    pid_t pid;
-
-    pid = fork();
-
-    // Error
+    pid_t pid = fork();
     if (pid == -1) {
+        perror("fork");
         return false;
     } 
     
     // The child
     if (pid == 0) {
-        // Parse command for execv arguments
-        const char * command_to_execute = command[0];
-        char * arguments[count];
-        for (size_t i = 0; i < count; ++i) {
-            arguments[i] = command[i+1];
-        }
-
-        execv(command_to_execute, arguments);
+        execv(command[0], command);
 
         // If execv fails, return an error
         return false;
@@ -90,27 +96,13 @@ bool do_exec(int count, ...)
 
     // The parent
     int status;
-    const int return_pid = waitpid(pid, &status, 0);
-
-    // waitpid failed
-    if (return_pid == -1) {
-        printf("1\r\n");
-        return false;
-    }
-    
-    if (WIFEXITED(status)) {
-        const int exit_code = WEXITSTATUS((status));
-        printf("2\r\n");
-        if (exit_code == 0) {
-            printf("2T\r\n");
-            return true;
-        }
+    // If function fails
+    if (waitpid(pid, &status, 0) == -1) {
+        perror("waitpid");
         return false;
     }
 
-    printf("3\r\n");
-
-    return false;
+    return is_command_successful(status);
 }
 
 /**
@@ -128,6 +120,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     {
         command[i] = va_arg(args, char *);
     }
+    va_end(args);
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
@@ -141,8 +134,43 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    
 
-    va_end(args);
 
-    return true;
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return false;
+    } 
+    
+    // The child
+    if (pid == 0) {
+        const int fd = creat(outputfile, 0644);
+        if (fd == -1) {
+            perror("creat");
+            return false;
+        }
+
+        // redirect standard out
+        if (dup2(fd, 1) == -1) {
+            perror("dup2");
+            return false;
+        }
+        close(fd);
+
+        execv(command[0], command);
+
+        // If execv fails, return an error
+        return false;
+    }
+
+    // The parent
+    int status;
+    // If function fails
+    if (waitpid(pid, &status, 0) == -1) {
+        perror("waitpid");
+        return false;
+    }
+
+    return is_command_successful(status);
 }
