@@ -22,17 +22,6 @@ else
 fi
 
 mkdir -p ${OUTDIR}
-mkdir -p rootfs
-cd "${OUTDIR}/rootfs" 
-mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
-mkdir -p usr/bin usr/lib usr/sbin
-mkdir -p var/log
-
-DEP_DIR=/usr/local/arm_cross_compiler/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc
-cp "${DEP_DIR}/lib/ld-linux-aarch64.so.1" ${OUTDIR}/rootfs/lib
-cp "${DEP_DIR}/lib64/libm.so.6" ${OUTDIR}/rootfs/lib64
-cp "${DEP_DIR}/lib64/libresolv.so.2" ${OUTDIR}/rootfs/lib64
-cp "${DEP_DIR}/lib64/libc.so.6" ${OUTDIR}/rootfs/lib64
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
@@ -61,6 +50,12 @@ then
     sudo rm  -rf ${OUTDIR}/rootfs
 fi
 
+mkdir -p rootfs
+cd "${OUTDIR}/rootfs" 
+mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p usr/bin usr/lib usr/sbin
+mkdir -p var/log
+
 cd "${OUTDIR}"
 if [ ! -d "${OUTDIR}/busybox" ]
 then
@@ -84,7 +79,11 @@ cd "${OUTDIR}/rootfs"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
-
+DEP_DIR=/usr/local/arm_cross_compiler/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc
+cp "${DEP_DIR}/lib/ld-linux-aarch64.so.1" ${OUTDIR}/rootfs/lib
+cp "${DEP_DIR}/lib64/libm.so.6" ${OUTDIR}/rootfs/lib64
+cp "${DEP_DIR}/lib64/libresolv.so.2" ${OUTDIR}/rootfs/lib64
+cp "${DEP_DIR}/lib64/libc.so.6" ${OUTDIR}/rootfs/lib64
 
 # TODO: Make device nodes
 sudo mknod -m 666 dev/null c 1 3
