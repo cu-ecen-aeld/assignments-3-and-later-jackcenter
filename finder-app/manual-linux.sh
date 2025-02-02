@@ -79,7 +79,7 @@ cd "${OUTDIR}/rootfs"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
-DEP_DIR=/home/jack/arm_cross_compiler/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/
+DEP_DIR=/usr/local/arm_cross_compiler/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/
 cp "${DEP_DIR}/lib/ld-linux-aarch64.so.1" ${OUTDIR}/rootfs/lib
 cp "${DEP_DIR}/lib64/libm.so.6" ${OUTDIR}/rootfs/lib64
 cp "${DEP_DIR}/lib64/libresolv.so.2" ${OUTDIR}/rootfs/lib64
