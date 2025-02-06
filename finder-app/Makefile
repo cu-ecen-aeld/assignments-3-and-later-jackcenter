@@ -16,6 +16,8 @@ ifneq ($(CROSS_COMPILE),)
     CC := $(CROSS_COMPILE)gcc
 endif
 
+all: $(SRC_DIR)/$(TARGET_EXEC)
+
 # Target to build final executable on native system
 $(SRC_DIR)/$(TARGET_EXEC): $(OBJS)
 	$(CC) $(OBJS) -o $@
