@@ -2,6 +2,8 @@
 #include <errno.h>
 #include <fcntl.h>        // creat
 #include <netdb.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>       // free
 #include <string.h>
@@ -12,7 +14,9 @@
 
 #define PORT ("9600")
 #define BACKLOG (2)
-#define RESULT_FILE ("/var/tmp/aesdsocketdata")
+#define RESULT_FILE "/var/tmp/aesdsocketdata"
+
+bool is_terminated = false;
 
 /**
  * @brief Creates the `addrinfo` for the server.
@@ -36,20 +40,21 @@ static int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_in
  * @param server_fd server socket file descriptor
  * @param client_fd_ptr pointer to the location to store the client file descriptor.
  * @return 0 if successful
+ * @return 1 if an external termination is called
  * @return -1 otherwise
  */
 static int create_client_connection(const int server_fd, int *client_fd_ptr);
 
-/**
- * @brief Waits for a client to connect, then accepts the connection
- * @param server_fd server socket file descriptor
- * @param client_fd_ptr pointer to the location to store the client file descriptor.
- * @return 0 if successful
- * @return -1 otherwise
- */
-static int establish_client_connection(const int server_fd, int *client_fd_ptr);
+static int append_to_file(const char* file, char* buffer, const size_t buffer_len);
+
+void sigint_handler(int sig);
 
 int main() {
+  // Register SIGINT handler
+  if (signal(SIGINT, sigint_handler) == SIG_ERR) {
+    perror("signal");
+    return -1;
+  }
   
   // Setup the server
   int server_socket = 0;
@@ -60,112 +65,103 @@ int main() {
     return -1;
   }
 
-// TODO: START LOOP
-  int client_socket = 0;
-  if (establish_client_connection(server_socket, &client_socket) != 0) {
-    syslog(LOG_ERR, "establish_client_connection");
-    freeaddrinfo(server_info);
-    return -1;
-  }
+  while (!is_terminated) {
+    // Wait for a connection
+    int client_socket = 0;
+    const int connection_result = create_client_connection(server_socket, &client_socket);
+    switch (connection_result) {
+      case -1:
+        syslog(LOG_ERR, "create_client_connection");
+        freeaddrinfo(server_info);
+        return -1;
+      case 1:
+        continue;
+      default:
+    }
 
-  // RECEIVE
 
-  // ===== Write the Packet =====
-  // Wait for packet
-  char recv_buffer[1024];
-  size_t bytes_received = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-  if ( bytes_received == -1) {
-    perror("recv");
-    freeaddrinfo(server_info);
-    return -1;
-  }
+    // RECEIVE
 
-  // TODO: remove the string print out when ready
-  recv_buffer[bytes_received] = '\0';
-  printf("Heard: %s", recv_buffer);
-  recv_buffer[bytes_received] = '\n';
+    // ===== Write the Packet =====
+    // Wait for packet
+    char recv_buffer[1024];
+    size_t bytes_received = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
+    if ( bytes_received == -1) {
+      perror("recv");
+      freeaddrinfo(server_info);
+      return -1;
+    }
+    recv_buffer[bytes_received] = '\n';
 
-  // TODO: replace with data recieved from connections. Buffer data until an '/n' is received.
-  // Append data to file
-  const int result_fd = open(RESULT_FILE, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR |S_IRGRP | S_IROTH);
-  const ssize_t nr = write(result_fd, recv_buffer, bytes_received);
-  if (nr == -1) {
-    perror("write");
-    freeaddrinfo(server_info);
-    return -1;
-  } else if (nr != bytes_received) {
-    printf("Error: partial write\r\n");
-    freeaddrinfo(server_info);
-    return -1;
-  }
-  // ===== Write the Packet (END) =====
+    if (append_to_file(RESULT_FILE, recv_buffer, bytes_received) == -1) {
+      syslog(LOG_ERR, "append_to_file");
+      freeaddrinfo(server_info);
+      return -1;
+    }
+    // READ
 
-  // READ
+    // ===== Send the Packet =====
+    
+    // // Return to the beginning of the file then send one line at a time. 
+    // lseek(fd, 0, SEEK_SET);
+    const int fd = open(RESULT_FILE, O_RDONLY);
+    FILE *stream = fdopen(fd, "r");
+    if (NULL == stream) {
+      printf("Error: fdopen\r\n");
+      freeaddrinfo(server_info);
+      return -1;
+    }
 
-  // ===== Send the Packet =====
-  // Return to the beginning of the file then send one line at a time. 
-  // TODO: send each line to the client.
-  lseek(result_fd, 0, SEEK_SET);
+    char *line = NULL;
+    size_t line_len = 0;
+    if (getline(&line, &line_len, stream) == -1) {
+      printf("Error: getline\r\n");
+      free(line);
+      freeaddrinfo(server_info);
+      return -1;
+    }
 
-  FILE *stream = fdopen(result_fd, "r");
-  if (NULL == stream) {
-    printf("Error: fdopen\r\n");
-    freeaddrinfo(server_info);
-    return -1;
-  }
+    printf("Line: %s\r\n", line);
+    if (fclose(stream) != 0) {
+      printf("Error: fclose\r\n");
+      free(line);
+      freeaddrinfo(server_info);
+      return -1;
+    }
 
-  char *line = NULL;
-  size_t line_len = 0;
-  if (getline(&line, &line_len, stream) == -1) {
-    printf("Error: getline\r\n");
+    char send_buffer[1024] = "Read: ";
+    strcat(send_buffer, line);
+    size_t bytes_sent = send(client_socket, send_buffer, strlen(send_buffer), 0);
+
+    if (bytes_sent == -1) {
+      perror("send");
+      freeaddrinfo(server_info);
+      free(line);
+      return -1;
+    }
+
+    if (bytes_sent != strlen(send_buffer)) {
+      perror("send");
+      freeaddrinfo(server_info);
+      free(line);
+      return -1;
+    }
+
+    // ===== Send the Packet (End) =====
     free(line);
-    freeaddrinfo(server_info);
-    return -1;
+    // TODO: close the connection
   }
-
-  printf("Line: %s\r\n", line);
-  if (fclose(stream) != 0) {
-    printf("Error: fclose\r\n");
-    free(line);
-    freeaddrinfo(server_info);
-    return -1;
-  }
-
-  char send_buffer[1024] = "Read: ";
-  strcat(send_buffer, line);
-  size_t bytes_sent = send(client_socket, send_buffer, strlen(send_buffer), 0);
-
-  if (bytes_sent == -1) {
-    perror("send");
-    freeaddrinfo(server_info);
-    free(line);
-    return -1;
-  }
-
-  if (bytes_sent != strlen(send_buffer)) {
-    perror("send");
-    freeaddrinfo(server_info);
-    free(line);
-    return -1;
-  }
-
-  // ===== Send the Packet (End) =====
-
-  // TODO: close the connection
 // TODO: END LOOP
 
   // TODO: handle this in the termination signal handler.
   // DELETE
   printf("Delete\r\n");
+  freeaddrinfo(server_info);
   if (unlink(RESULT_FILE) != 0) {
-    printf("Error: unlink\r\n");
-    free(line);
-    freeaddrinfo(server_info);
+    perror("unlink");
     return -1;
   } 
 
-  free(line);
-  freeaddrinfo(server_info);
   return 0;
 }
 
@@ -185,7 +181,7 @@ int create_server_address_info(struct addrinfo **address_info) {
 }
 
 int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_info) {
-  const int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+  const int socket_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
   if (socket_fd == -1) {
     perror("socket");
     return -1; 
@@ -201,6 +197,11 @@ int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_info) {
     return -1;
   }
 
+  if (listen(socket_fd, BACKLOG) == -1) {
+    perror("listen");
+    return -1;
+  }
+
   *socket_fd_ptr = socket_fd; 
   return 0;
 }
@@ -208,12 +209,24 @@ int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_info) {
 int create_client_connection(const int server_fd, int *client_fd_ptr) {
   struct sockaddr_in client_addr;
   socklen_t addr_len = sizeof(struct sockaddr_in);
-  const int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-  if (client_fd == -1) {
+
+  int client_fd = -1;
+  while (client_fd < 0) {
+    if (is_terminated) {
+      return 1;
+    }
+
+    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+    if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
+    {
+      // TODO: add delay
+      continue;
+    }
+  
     printf("Error: accept\r\n");
     return -1;
   }
-
+   
   char ip4_string[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &(client_addr.sin_addr), ip4_string, INET_ADDRSTRLEN);
   syslog(LOG_INFO, "Accepted connection from %s\n", ip4_string);
@@ -222,14 +235,24 @@ int create_client_connection(const int server_fd, int *client_fd_ptr) {
   return 0;
 }
 
-int establish_client_connection(const int server_fd, int *client_fd_ptr) {
-  if (listen(server_fd, BACKLOG) == -1) {
-    perror("bind");
+void sigint_handler(int sig) {
+  printf("Ctrl+C!\r\n");
+  is_terminated = true; 
+}
+
+int append_to_file(const char* file, char* buffer, const size_t buffer_len) {
+  const int fd = open(file, O_WRONLY | O_APPEND | O_CREAT, S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+  const ssize_t result = write(fd, buffer, buffer_len);
+  if (result == -1) {
+    perror("write");
+    return -1;
+  } else if (result != buffer_len) {
+    syslog(LOG_ERR, "partial write");
     return -1;
   }
 
-  if (create_client_connection(server_fd, client_fd_ptr) != 0) {
-    syslog(LOG_ERR, "create_client_connection");
+  if (close(fd) == -1) {
+    perror("close");
     return -1;
   }
 
