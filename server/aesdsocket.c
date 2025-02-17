@@ -1,20 +1,23 @@
-#include <arpa/inet.h> // inet
+#include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h> // creat
+#include <fcntl.h>
 #include <netdb.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h> // free
+#include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
-#define PORT ("9000")
+#define PORT "9000"
 #define BACKLOG (2)
 #define RESULT_FILE "/var/tmp/aesdsocketdata"
+#define BUFFER_SIZE (1024)
 
 bool is_terminated = false;
 
@@ -35,6 +38,14 @@ static int create_server_address_info(struct addrinfo **address_info);
  */
 static int create_server_socket(int *socket_fd_ptr,
                                 struct addrinfo **address_info);
+
+/**
+ * @brief Sets up the daemon to run the program
+ * @return 0 if successful (in daemon process)
+ * @return 1 if in parent process
+ * @return -1 otherwise
+ */
+static int daemonize(void);
 
 /**
  * @brief Creates the client connection
@@ -58,6 +69,15 @@ static int create_client_connection(const int server_fd, int *client_fd_ptr);
  */
 static int append_to_file(const char *file, char *buffer,
                           const size_t buffer_len);
+
+/**
+ * @brief Receives data from client and writes to file
+ * @param file file to send
+ * @param client_fd client socket
+ * @return 0 if successful
+ * @return -1 otherwise
+ */
+static int receive_and_write_data(char *file, const int client_fd);
 
 /**
  * @brief Gets a line from the `stream`
@@ -94,20 +114,66 @@ static int send_file(char *file, const int client_fd);
  */
 void sigint_handler(int sig);
 
-int main() {
+int application(struct addrinfo **server_info, const bool is_daemon);
+
+int main(int argc, char *argv[]) {
+  openlog("aesdsocket", LOG_PID, LOG_USER);
+
+  bool execute_as_daemon = false;
+  if ((argc == 2) && (strcmp(argv[1], "-d") == 0)) {
+    execute_as_daemon = true;
+  } else if (argc != 1) {
+    printf("Usage: %s [-d]\r\n", argv[0]);
+    printf("Options:\r\n");
+    printf("  -d    execute as deamon\r\n");
+    closelog();
+    return 1;
+  }
+
   // Register SIGINT handler
   if (signal(SIGINT, sigint_handler) == SIG_ERR) {
     perror("signal");
+    closelog();
     return -1;
   }
 
+  // Register SIGTERM handler
+  if (signal(SIGTERM, sigint_handler) == SIG_ERR) {
+    perror("signal");
+    closelog();
+    return -1;
+  }
+
+  // Run application
+  struct addrinfo *server_addrinfo = NULL;
+  int result = application(&server_addrinfo, execute_as_daemon);
+
+  // Clean up
+  freeaddrinfo(server_addrinfo);
+  closelog();
+  return result;
+}
+
+int application(struct addrinfo **server_info, const bool is_daemon) {
+  syslog(LOG_DEBUG, "Starting `aesdsocket`.");
+
   // Setup the server
   int server_socket = 0;
-  struct addrinfo *server_info = NULL;
-  if (create_server_socket(&server_socket, &server_info) != 0) {
+  if (create_server_socket(&server_socket, server_info) != 0) {
     syslog(LOG_ERR, "create_server_socket");
-    freeaddrinfo(server_info);
     return -1;
+  }
+
+  if (is_daemon) {
+    const int daemon_resut = daemonize();
+    switch (daemon_resut) {
+    case -1:
+      syslog(LOG_ERR, "daemonize");
+      return -1;
+    case 1:
+      exit(EXIT_SUCCESS);
+    default:
+    }
   }
 
   // Loop until termination signal is received
@@ -119,43 +185,28 @@ int main() {
     switch (connection_result) {
     case -1: // error
       syslog(LOG_ERR, "create_client_connection");
-      freeaddrinfo(server_info);
       return -1;
     case 1: // external termination
       continue;
     default:
     }
 
-    // Receive data
-    char recv_buffer[1024];
-    size_t bytes_received =
-        recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-    if (bytes_received == -1) {
-      perror("recv");
-      freeaddrinfo(server_info);
-      return -1;
-    }
-    recv_buffer[bytes_received] = '\n';
-
-    // Add data to end of the file
-    if (append_to_file(RESULT_FILE, recv_buffer, bytes_received) == -1) {
-      syslog(LOG_ERR, "append_to_file");
-      freeaddrinfo(server_info);
+    // Receive data from client
+    if (receive_and_write_data(RESULT_FILE, client_socket) == -1) {
+      syslog(LOG_ERR, "receive_data");
       return -1;
     }
 
     // Send the contents of the file back to the client
     if (send_file(RESULT_FILE, client_socket) == -1) {
       syslog(LOG_ERR, "send_file");
-      freeaddrinfo(server_info);
       return -1;
     }
   }
 
   // Delete the file
-  freeaddrinfo(server_info);
-  if (unlink(RESULT_FILE) != 0) {
-    perror("unlink");
+  if (remove(RESULT_FILE) != 0) {
+    perror("remove");
     return -1;
   }
 
@@ -210,6 +261,37 @@ int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_info) {
   return 0;
 }
 
+int daemonize(void) {
+  pid_t pid = fork();
+  if (pid == -1) {
+    perror("fork");
+    return -1;
+  } else if (pid != 0) {
+    // This process is the parent
+    return 1;
+  }
+
+  // Create a new session and process group
+  if (setsid() == -1) {
+    syslog(LOG_ERR, "setsid");
+    return -1;
+  }
+
+  // Set working directory to root
+  if (chdir("/") == -1) {
+    syslog(LOG_ERR, "chdir");
+    return -1;
+  }
+
+  // Note: not closing files to keep server socket open.
+
+  open("/dev/null", O_RDWR); // stdin
+  dup(0);                    // stdout
+  dup(0);                    // stderror
+
+  return 0;
+}
+
 int create_client_connection(const int server_fd, int *client_fd_ptr) {
   struct sockaddr_in client_addr;
   socklen_t addr_len = sizeof(struct sockaddr_in);
@@ -222,11 +304,15 @@ int create_client_connection(const int server_fd, int *client_fd_ptr) {
 
     client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
     if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
-      // TODO: add delay
+      struct timespec accept_delay;
+      accept_delay.tv_sec = 0;
+      accept_delay.tv_nsec = 100000000;
+      nanosleep(&accept_delay, NULL);
       continue;
     }
 
-    printf("Error: accept\r\n");
+    syslog(LOG_ERR, "accept: %s", strerror(errno));
+    perror("accept");
     return -1;
   }
 
@@ -254,6 +340,26 @@ int append_to_file(const char *file, char *buffer, const size_t buffer_len) {
     perror("close");
     return -1;
   }
+
+  return 0;
+}
+
+static int receive_and_write_data(char *file, const int client_fd) {
+  char recv_buffer[BUFFER_SIZE];
+  size_t bytes_received = 0;
+  do {
+    bytes_received = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
+    if (bytes_received == -1) {
+      perror("recv");
+      return -1;
+    }
+
+    // Add data to end of the file
+    if (append_to_file(file, recv_buffer, bytes_received) == -1) {
+      syslog(LOG_ERR, "append_to_file");
+      return -1;
+    }
+  } while (bytes_received == BUFFER_SIZE);
 
   return 0;
 }
@@ -305,6 +411,7 @@ int send_file(char *file, const int client_fd) {
     case -1: // error
       syslog(LOG_ERR, "read_line_from_stream");
       free(line);
+      fclose(stream);
       return -1;
     default:
     }
@@ -312,15 +419,17 @@ int send_file(char *file, const int client_fd) {
     if (send_line(client_fd, line) == -1) {
       syslog(LOG_ERR, "send_line");
       free(line);
+      fclose(stream);
       return -1;
     }
   } while (read_line_result != 1);
 
   free(line);
+  fclose(stream);
   return 0;
 }
 
 void sigint_handler(int sig) {
-  syslog(LOG_INFO, "termination signal received");
+  syslog(LOG_DEBUG, "termination signal received");
   is_terminated = true;
 }
