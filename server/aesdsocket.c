@@ -45,7 +45,21 @@ static int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_in
  */
 static int create_client_connection(const int server_fd, int *client_fd_ptr);
 
+/**
+ * @brief Appends the `buffer` to the `file` and creates the file if it doesn't exist
+ * @param file file location
+ * @param buffer data to write
+ * @param buffer_len size of the data in `buffer`
+ * @return 0 if successful
+ * @return -1 otherwise
+ */
 static int append_to_file(const char* file, char* buffer, const size_t buffer_len);
+
+static int read_line_from_stream(FILE *stream, char** line, size_t *line_len);
+
+static int send_line();
+
+static int send_file();
 
 void sigint_handler(int sig);
 
@@ -98,37 +112,40 @@ int main() {
       freeaddrinfo(server_info);
       return -1;
     }
-    // READ
 
     // ===== Send the Packet =====
     
     // // Return to the beginning of the file then send one line at a time. 
-    // lseek(fd, 0, SEEK_SET);
     const int fd = open(RESULT_FILE, O_RDONLY);
     FILE *stream = fdopen(fd, "r");
     if (NULL == stream) {
-      printf("Error: fdopen\r\n");
+      syslog(LOG_ERR, "fdopen");
       freeaddrinfo(server_info);
       return -1;
     }
 
+    // send file data
+    send_file();
+
+    // get a line
     char *line = NULL;
     size_t line_len = 0;
-    if (getline(&line, &line_len, stream) == -1) {
-      printf("Error: getline\r\n");
-      free(line);
-      freeaddrinfo(server_info);
-      return -1;
+    int read_line_result = read_line_from_stream(stream, &line, &line_len);
+    switch(read_line_result) {
+      case 1: // end of file
+        free(line);
+        continue;
+      case -1: // error
+        syslog(LOG_ERR, "read_line_from_stream");
+        free(line);
+        freeaddrinfo(server_info);
+        return -1;
+      default:
     }
 
     printf("Line: %s\r\n", line);
-    if (fclose(stream) != 0) {
-      printf("Error: fclose\r\n");
-      free(line);
-      freeaddrinfo(server_info);
-      return -1;
-    }
-
+ 
+    // send a line
     char send_buffer[1024] = "Read: ";
     strcat(send_buffer, line);
     size_t bytes_sent = send(client_socket, send_buffer, strlen(send_buffer), 0);
@@ -147,11 +164,21 @@ int main() {
       return -1;
     }
 
+    // printf("Line: %s\r\n", line);
+    // if (fclose(stream) != 0) {
+    //   printf("Error: fclose\r\n");
+    //   free(line);
+    //   freeaddrinfo(server_info);
+    //   return -1;
+    // }
+
+    
+
     // ===== Send the Packet (End) =====
     free(line);
     // TODO: close the connection
   }
-// TODO: END LOOP
+
 
   // TODO: handle this in the termination signal handler.
   // DELETE
@@ -185,6 +212,12 @@ int create_server_socket(int *socket_fd_ptr, struct addrinfo **address_info) {
   if (socket_fd == -1) {
     perror("socket");
     return -1; 
+  }
+
+  int opt = 1;
+  if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+      perror("setsockopt");
+      return -1;
   }
 
   if (create_server_address_info(address_info) != 0) {
@@ -235,11 +268,6 @@ int create_client_connection(const int server_fd, int *client_fd_ptr) {
   return 0;
 }
 
-void sigint_handler(int sig) {
-  printf("Ctrl+C!\r\n");
-  is_terminated = true; 
-}
-
 int append_to_file(const char* file, char* buffer, const size_t buffer_len) {
   const int fd = open(file, O_WRONLY | O_APPEND | O_CREAT, S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
   const ssize_t result = write(fd, buffer, buffer_len);
@@ -257,4 +285,30 @@ int append_to_file(const char* file, char* buffer, const size_t buffer_len) {
   }
 
   return 0;
+}
+
+int read_line_from_stream(FILE *stream, char** line, size_t *line_len) {
+  if (getline(line, line_len, stream) == -1) {
+    if (feof(stream)) {
+      return 1;
+    }
+
+    syslog(LOG_ERR, "getline");
+    return -1;
+  }
+
+  return 0;
+}
+
+int send_line() {
+  return 0;
+}
+
+int send_file() {
+  return send_line();
+}
+
+void sigint_handler(int sig) {
+  printf("Ctrl+C!\r\n");
+  is_terminated = true; 
 }
