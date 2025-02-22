@@ -10,11 +10,11 @@ fi
 case "$argument" in
     start)
         echo "Starting aesdsocket daemon..."
-        start-stop-daemon --start --background --quiet --exec ${PWD}/aesdsocket -- -d
+        start-stop-daemon --start --background --quiet --exec /usr/bin/aesdsocket -- -d
         ;;
     stop)
         echo "Stopping aesdsocket daemon..."
-        start-stop-daemon --stop --quiet --exec  ${PWD}/aesdsocket
+        start-stop-daemon --stop --quiet --exec  /usr/bin/aesdsocket
         ;;
     *)
         echo "Usage: aesdsocket-start-stop {start|stop}"
