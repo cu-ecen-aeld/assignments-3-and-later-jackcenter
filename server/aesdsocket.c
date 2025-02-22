@@ -114,6 +114,13 @@ static int send_file(char *file, const int client_fd);
  */
 void sigint_handler(int sig);
 
+/**
+ * @brief Runs the socket application
+ * @param server_info address information for the server
+ * @param is_daemon indicates if application should be run as a daemon
+ * @return 0 if successful
+ * @return -1 otherwise
+ */
 int application(struct addrinfo **server_info, const bool is_daemon);
 
 int main(int argc, char *argv[]) {
@@ -161,6 +168,7 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
   int server_socket = 0;
   if (create_server_socket(&server_socket, server_info) != 0) {
     syslog(LOG_ERR, "create_server_socket");
+    close(server_socket);
     return -1;
   }
 
@@ -169,6 +177,7 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     switch (daemon_resut) {
     case -1:
       syslog(LOG_ERR, "daemonize");
+      close(server_socket);
       return -1;
     case 1:
       exit(EXIT_SUCCESS);
@@ -185,6 +194,8 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     switch (connection_result) {
     case -1: // error
       syslog(LOG_ERR, "create_client_connection");
+      close(client_socket);
+      close(server_socket);
       return -1;
     case 1: // external termination
       continue;
@@ -194,22 +205,30 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     // Receive data from client
     if (receive_and_write_data(RESULT_FILE, client_socket) == -1) {
       syslog(LOG_ERR, "receive_data");
+      close(client_socket);
+      close(server_socket);
       return -1;
     }
 
     // Send the contents of the file back to the client
     if (send_file(RESULT_FILE, client_socket) == -1) {
       syslog(LOG_ERR, "send_file");
+      close(client_socket);
+      close(server_socket);
       return -1;
     }
+
+    close(client_socket);
   }
 
   // Delete the file
   if (remove(RESULT_FILE) != 0) {
     perror("remove");
+    close(server_socket);
     return -1;
   }
 
+  close(server_socket);
   return 0;
 }
 
