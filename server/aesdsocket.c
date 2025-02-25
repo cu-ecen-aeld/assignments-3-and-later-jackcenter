@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <queue.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -185,6 +186,11 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     }
   }
 
+  // === (AS6-3) Initialize a clock with a 10 s loop
+  // Write callback function to append timestamp
+
+  // === (AS6-2) Initialize a queue
+
   // Loop until termination signal is received
   while (!is_terminated) {
     // Wait for a connection
@@ -201,6 +207,9 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
       continue;
     default:
     }
+
+    // (AS6-1) Start running socket data transfer in a thread
+    // (AS6-2)Add thread to linked list
 
     // Receive data from client
     if (receive_and_write_data(RESULT_FILE, client_socket) == -1) {
@@ -219,7 +228,11 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     }
 
     close(client_socket);
+
+    // ===== (AS6-2) Check if any threads need to join =====
   }
+
+  // === (AS6-2) Wait for all threads to join, signal them to terminate if needed.
 
   // Delete the file
   if (remove(RESULT_FILE) != 0) {
