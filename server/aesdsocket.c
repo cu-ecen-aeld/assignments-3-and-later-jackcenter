@@ -2,7 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
-#include <queue.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -21,6 +21,17 @@
 #define BUFFER_SIZE (1024)
 
 bool is_terminated = false;
+
+/**
+ * @brief Runs the socket application. This application sets up a server that
+ * waits for client connections, writes data from the client to file, then sends
+ * the contents of the file back to the client. It uses a threaded approach to
+ * allow multiple clients connect simultaneously.
+ * @param server_fd filed descriptor for the server
+ * @return 0 if successful
+ * @return -1 otherwise
+ */
+static int application(const int server_fd);
 
 /**
  * @brief Creates the `addrinfo` for the server.
@@ -113,20 +124,20 @@ static int send_file(char *file, const int client_fd);
  * @brief SIGINT signal handler used to gracefully shutdown the program
  * @param sig signal number
  */
-void sigint_handler(int sig);
+static void sigint_handler(int sig);
 
 /**
- * @brief Runs the socket application
- * @param server_info address information for the server
- * @param is_daemon indicates if application should be run as a daemon
- * @return 0 if successful
- * @return -1 otherwise
+ * @brief Intended to be run in a thread. Completes the data transfer from the
+ * client passed in `arg`. Data from the client is recieved and written to file,
+ * then the entire contents of the file are sent back to the client.
+ * @param arg client file descriptor as an int*
  */
-int application(struct addrinfo **server_info, const bool is_daemon);
+static void *data_transfer(void *arg);
 
 int main(int argc, char *argv[]) {
   openlog("aesdsocket", LOG_PID, LOG_USER);
 
+  // Parse Arguments
   bool execute_as_daemon = false;
   if ((argc == 2) && (strcmp(argv[1], "-d") == 0)) {
     execute_as_daemon = true;
@@ -152,28 +163,17 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // Run application
-  struct addrinfo *server_addrinfo = NULL;
-  int result = application(&server_addrinfo, execute_as_daemon);
-
-  // Clean up
-  freeaddrinfo(server_addrinfo);
-  closelog();
-  return result;
-}
-
-int application(struct addrinfo **server_info, const bool is_daemon) {
-  syslog(LOG_DEBUG, "Starting `aesdsocket`.");
-
-  // Setup the server
+  // Setup the socket server
   int server_socket = 0;
-  if (create_server_socket(&server_socket, server_info) != 0) {
+  struct addrinfo *server_addrinfo = NULL;
+  if (create_server_socket(&server_socket, &server_addrinfo) != 0) {
     syslog(LOG_ERR, "create_server_socket");
     close(server_socket);
     return -1;
   }
 
-  if (is_daemon) {
+  // Handle daemon execution if selected
+  if (execute_as_daemon) {
     const int daemon_resut = daemonize();
     switch (daemon_resut) {
     case -1:
@@ -186,6 +186,18 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     }
   }
 
+  // Run the application
+  int result = application(server_socket);
+
+  // Clean up
+  close(server_socket);
+  freeaddrinfo(server_addrinfo);
+  closelog();
+  return result;
+}
+
+int application(const int server_fd) {
+  syslog(LOG_DEBUG, "Starting `aesdsocket`.");
   // === (AS6-3) Initialize a clock with a 10 s loop
   // Write callback function to append timestamp
 
@@ -196,52 +208,48 @@ int application(struct addrinfo **server_info, const bool is_daemon) {
     // Wait for a connection
     int client_socket = 0;
     const int connection_result =
-        create_client_connection(server_socket, &client_socket);
+        create_client_connection(server_fd, &client_socket);
     switch (connection_result) {
     case -1: // error
       syslog(LOG_ERR, "create_client_connection");
       close(client_socket);
-      close(server_socket);
       return -1;
     case 1: // external termination
       continue;
     default:
     }
 
-    // (AS6-1) Start running socket data transfer in a thread
+    // Complete socket data transfer in thread
+    pthread_t thread_id;
+    const int pthread_create_result =
+        pthread_create(&thread_id, NULL, data_transfer, (void *)&client_socket);
+    if (pthread_create_result != 0) {
+      syslog(LOG_ERR, "ptrhead_create returned error: %d",
+             pthread_create_result);
+      close(client_socket);
+      return -1;
+    }
+
     // (AS6-2)Add thread to linked list
 
-    // Receive data from client
-    if (receive_and_write_data(RESULT_FILE, client_socket) == -1) {
-      syslog(LOG_ERR, "receive_data");
-      close(client_socket);
-      close(server_socket);
-      return -1;
+    const int pthread_join_result = pthread_join(thread_id, NULL);
+    if (pthread_join_result != 0) {
+      syslog(LOG_ERR, "pthread_join returned error: %d", pthread_join_result);
     }
-
-    // Send the contents of the file back to the client
-    if (send_file(RESULT_FILE, client_socket) == -1) {
-      syslog(LOG_ERR, "send_file");
-      close(client_socket);
-      close(server_socket);
-      return -1;
-    }
-
-    close(client_socket);
+    syslog(LOG_DEBUG, "Thread joined for client %d.", client_socket);
 
     // ===== (AS6-2) Check if any threads need to join =====
   }
 
-  // === (AS6-2) Wait for all threads to join, signal them to terminate if needed.
+  // === (AS6-2) Wait for all threads to join, signal them to terminate if
+  // needed.
 
   // Delete the file
   if (remove(RESULT_FILE) != 0) {
     perror("remove");
-    close(server_socket);
     return -1;
   }
 
-  close(server_socket);
   return 0;
 }
 
@@ -464,4 +472,25 @@ int send_file(char *file, const int client_fd) {
 void sigint_handler(int sig) {
   syslog(LOG_DEBUG, "termination signal received");
   is_terminated = true;
+}
+
+void *data_transfer(void *arg) {
+  int client_fd = *(int *)(arg);
+  syslog(LOG_DEBUG, "Thread started for client %d.", client_fd);
+
+  if (receive_and_write_data(RESULT_FILE, client_fd) == -1) {
+    syslog(LOG_ERR, "receive_data");
+    close(client_fd);
+    pthread_exit(NULL);
+  }
+
+  // Send the contents of the file back to the client
+  if (send_file(RESULT_FILE, client_fd) == -1) {
+    syslog(LOG_ERR, "send_file");
+    close(client_fd);
+    pthread_exit(NULL);
+  }
+
+  close(client_fd);
+  pthread_exit(NULL);
 }
