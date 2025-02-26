@@ -233,12 +233,20 @@ int main(int argc, char *argv[]) {
   }
 
   // Run the application
-  int result = application(server_socket);
+  const int result = application(server_socket);
 
   // Clean up
   close(server_socket);
   freeaddrinfo(server_addrinfo);
   closelog();
+
+  // Delete the file
+  if (remove(RESULT_FILE) != 0) {
+    if (errno != ENOENT) {
+      perror("remove");
+    }
+  }
+
   return result;
 }
 
@@ -268,7 +276,7 @@ int application(const int server_fd) {
     case 1: // external termination
       continue;
     case 2: { // connection timeout
-      if(!join_completed_threads(&head)) {
+      if (!join_completed_threads(&head)) {
         syslog(LOG_ERR, "close_completed_threads");
       }
       continue;
@@ -304,13 +312,6 @@ int application(const int server_fd) {
 
   // Wait for all threads to join
   join_threads(&head);
-
-  // Delete the file
-  if (remove(RESULT_FILE) != 0) {
-    perror("remove");
-    return -1;
-  }
-
   return 0;
 }
 
