@@ -15,10 +15,29 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "queue.h"
+
 #define PORT "9000"
 #define BACKLOG (2)
 #define RESULT_FILE "/var/tmp/aesdsocketdata"
 #define BUFFER_SIZE (1024)
+
+typedef enum { UNITITIALIZED, RUNNING, SUCCEEDED, FAILED } ThreadStatus;
+
+typedef struct {
+  int client_fd;
+  ThreadStatus thread_status;
+} ThreadData;
+
+struct node {
+  ThreadData thread_data;
+  pthread_t thread;
+  SLIST_ENTRY(node) nodes;
+};
+
+struct head_s {
+  struct node *slh_first; /* first element */
+};
 
 bool is_terminated = false;
 
@@ -68,7 +87,8 @@ static int daemonize(void);
  * @return 1 if an external termination is called
  * @return -1 otherwise
  */
-static int create_client_connection(const int server_fd, int *client_fd_ptr);
+static int create_client_connection(const int server_fd, int *client_fd_ptr,
+                                    const struct timespec *timeout);
 
 /**
  * @brief Appends the `buffer` to the `file` and creates the file if it doesn't
@@ -133,6 +153,32 @@ static void sigint_handler(int sig);
  * @param arg client file descriptor as an int*
  */
 static void *data_transfer(void *arg);
+
+/**
+ * @brief Adds the `lhs` and `rhs` timespecs together and puts them in `result`.
+ */
+void add_timespec(const struct timespec *lhs, const struct timespec *rhs,
+                  struct timespec *result);
+
+/**
+ * @brief returns true if the `current_time` is greater than the `end_time`.
+ */
+bool is_timespec_elapsed(const struct timespec *end_time,
+                         const struct timespec *current_time);
+
+/**
+ * @brief Joins any thread in the linked list `head` that is complete.
+ * @return true if successful
+ * @return false otherwise
+ */
+bool join_completed_threads(struct head_s *head);
+
+/**
+ * @brief Waits for all threads in the linked list `head` to join.
+ * @return true if successful
+ * @return false otherwise
+ */
+bool join_threads(struct head_s *head);
 
 int main(int argc, char *argv[]) {
   openlog("aesdsocket", LOG_PID, LOG_USER);
@@ -201,48 +247,63 @@ int application(const int server_fd) {
   // === (AS6-3) Initialize a clock with a 10 s loop
   // Write callback function to append timestamp
 
-  // === (AS6-2) Initialize a queue
+  // Initialize a queue
+  struct head_s head;
+  SLIST_INIT(&head);
 
   // Loop until termination signal is received
   while (!is_terminated) {
     // Wait for a connection
     int client_socket = 0;
+    struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
     const int connection_result =
-        create_client_connection(server_fd, &client_socket);
+        create_client_connection(server_fd, &client_socket, &timeout);
     switch (connection_result) {
     case -1: // error
       syslog(LOG_ERR, "create_client_connection");
       close(client_socket);
       return -1;
+    case 0: // connection created
+      break;
     case 1: // external termination
       continue;
-    default:
+    case 2: { // connection timeout
+      if(!join_completed_threads(&head)) {
+        syslog(LOG_ERR, "close_completed_threads");
+      }
+      continue;
     }
+    default:
+      syslog(LOG_ERR,
+             "Unknown return code (%d) from `create_client_connection`",
+             connection_result);
+      continue;
+    }
+
+    // Setup thread data
+    struct node *slist_data = malloc(sizeof(struct node));
+    slist_data->thread_data.client_fd = client_socket;
+    slist_data->thread_data.thread_status = UNITITIALIZED;
 
     // Complete socket data transfer in thread
     pthread_t thread_id;
-    const int pthread_create_result =
-        pthread_create(&thread_id, NULL, data_transfer, (void *)&client_socket);
+    const int pthread_create_result = pthread_create(
+        &thread_id, NULL, data_transfer, (void *)&(slist_data->thread_data));
     if (pthread_create_result != 0) {
-      syslog(LOG_ERR, "ptrhead_create returned error: %d",
+      syslog(LOG_ERR, "pthread_create returned error: %d",
              pthread_create_result);
+      free(slist_data);
       close(client_socket);
       return -1;
     }
 
-    // (AS6-2)Add thread to linked list
-
-    const int pthread_join_result = pthread_join(thread_id, NULL);
-    if (pthread_join_result != 0) {
-      syslog(LOG_ERR, "pthread_join returned error: %d", pthread_join_result);
-    }
-    syslog(LOG_DEBUG, "Thread joined for client %d.", client_socket);
-
-    // ===== (AS6-2) Check if any threads need to join =====
+    // Add thread to linked list
+    slist_data->thread = thread_id;
+    SLIST_INSERT_HEAD(&head, slist_data, nodes);
   }
 
-  // === (AS6-2) Wait for all threads to join, signal them to terminate if
-  // needed.
+  // Wait for all threads to join
+  join_threads(&head);
 
   // Delete the file
   if (remove(RESULT_FILE) != 0) {
@@ -332,21 +393,35 @@ int daemonize(void) {
   return 0;
 }
 
-int create_client_connection(const int server_fd, int *client_fd_ptr) {
+int create_client_connection(const int server_fd, int *client_fd_ptr,
+                             const struct timespec *timeout_ptr) {
   struct sockaddr_in client_addr;
   socklen_t addr_len = sizeof(struct sockaddr_in);
 
   int client_fd = -1;
+
+  struct timespec start_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+  struct timespec end_time;
+  add_timespec(&start_time, timeout_ptr, &end_time);
+
   while (client_fd < 0) {
     if (is_terminated) {
       return 1;
+    }
+
+    struct timespec current_time;
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
+    if (is_timespec_elapsed(&end_time, &current_time)) {
+      return 2;
     }
 
     client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
     if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
       struct timespec accept_delay;
       accept_delay.tv_sec = 0;
-      accept_delay.tv_nsec = 100000000;
+      accept_delay.tv_nsec = 10e6;
       nanosleep(&accept_delay, NULL);
       continue;
     }
@@ -387,6 +462,8 @@ int append_to_file(const char *file, char *buffer, const size_t buffer_len) {
 static int receive_and_write_data(char *file, const int client_fd) {
   char recv_buffer[BUFFER_SIZE];
   size_t bytes_received = 0;
+
+  // TODO: Could add a timeout here as well
   do {
     bytes_received = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
     if (bytes_received == -1) {
@@ -475,22 +552,119 @@ void sigint_handler(int sig) {
 }
 
 void *data_transfer(void *arg) {
-  int client_fd = *(int *)(arg);
-  syslog(LOG_DEBUG, "Thread started for client %d.", client_fd);
+  ThreadData *thread_data = (ThreadData *)(arg);
+  thread_data->thread_status = RUNNING;
+  syslog(LOG_DEBUG, "Thread %ld started for client %d.", pthread_self(),
+         thread_data->client_fd);
 
-  if (receive_and_write_data(RESULT_FILE, client_fd) == -1) {
+  if (receive_and_write_data(RESULT_FILE, thread_data->client_fd) == -1) {
     syslog(LOG_ERR, "receive_data");
-    close(client_fd);
+    close(thread_data->client_fd);
+    thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
 
   // Send the contents of the file back to the client
-  if (send_file(RESULT_FILE, client_fd) == -1) {
+  if (send_file(RESULT_FILE, thread_data->client_fd) == -1) {
     syslog(LOG_ERR, "send_file");
-    close(client_fd);
+    close(thread_data->client_fd);
+    thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
 
-  close(client_fd);
+  close(thread_data->client_fd);
+  thread_data->thread_status = SUCCEEDED;
   pthread_exit(NULL);
+}
+
+void add_timespec(const struct timespec *lhs, const struct timespec *rhs,
+                  struct timespec *result) {
+  result->tv_sec = lhs->tv_sec + rhs->tv_sec;
+  result->tv_nsec = lhs->tv_nsec + rhs->tv_nsec;
+
+  // If nanoseconds exceed 1 second (1,000,000,000), adjust
+  if (result->tv_nsec >= 1000000000L) {
+    result->tv_sec += 1;
+    result->tv_nsec -= 1000000000L;
+  }
+}
+
+bool is_timespec_elapsed(const struct timespec *end_time,
+                         const struct timespec *current_time) {
+  if (current_time->tv_sec < end_time->tv_sec) {
+    return false;
+  }
+
+  if (current_time->tv_sec > end_time->tv_sec) {
+    return true;
+  }
+
+  // If we reach here, tv_sec is the same for both arguments
+  if (current_time->tv_nsec <= end_time->tv_nsec) {
+    return false;
+  }
+
+  // The current_time tv_sec and tv_nsec must be greater than the end_time
+  // tv_sec and tv_nsec
+  return true;
+}
+
+bool join_completed_threads(struct head_s *head) {
+  bool is_error = false;
+
+  struct node *slist_node = NULL;
+  SLIST_FOREACH(slist_node, head, nodes) {
+    syslog(LOG_DEBUG, "Thread: %ld  Status: %d\r\n", slist_node->thread,
+           slist_node->thread_data.thread_status);
+
+    switch (slist_node->thread_data.thread_status) {
+    case UNITITIALIZED:
+      break;
+    case RUNNING:
+      break;
+    case FAILED:
+      is_error = true;
+      syslog(LOG_ERR, "Thread %ld reported an error", slist_node->thread);
+    case SUCCEEDED: {
+      const int pthread_join_result = pthread_join(slist_node->thread, NULL);
+      if (pthread_join_result != 0) {
+        is_error = true;
+        syslog(LOG_ERR, "pthread_join returned error: %d", pthread_join_result);
+      } else {
+        syslog(LOG_DEBUG, "Thread joined for client %d.",
+               slist_node->thread_data.client_fd);
+      }
+
+      SLIST_REMOVE(head, slist_node, node, nodes);
+      free(slist_node);
+      break;
+    }
+    default:
+      syslog(LOG_ERR, "Unknown ThreadStatus");
+      break;
+    }
+  }
+
+  return is_error;
+}
+
+bool join_threads(struct head_s *head) {
+  bool is_error = false;
+
+  struct node *slist_node = NULL;
+  SLIST_FOREACH(slist_node, head, nodes) {
+    const int pthread_join_result = pthread_join(slist_node->thread, NULL);
+    if (pthread_join_result != 0) {
+      is_error = true;
+      syslog(LOG_ERR, "pthread_join returned error: %d", pthread_join_result);
+    } else {
+      syslog(LOG_DEBUG, "Thread joined for client %d.",
+             slist_node->thread_data.client_fd);
+    }
+
+    SLIST_REMOVE(head, slist_node, node, nodes);
+    free(slist_node);
+  }
+
+  return is_error;
 }
