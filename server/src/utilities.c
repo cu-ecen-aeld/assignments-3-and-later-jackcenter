@@ -77,12 +77,22 @@ int read_line_from_stream(FILE *stream, char **line, size_t *line_len) {
   return 0;
 }
 
+void slist_free(struct head_s *head) {
+  struct node *tmp;
+  while (!SLIST_EMPTY(head)) {
+    tmp = SLIST_FIRST(head);
+    SLIST_REMOVE(head, tmp, node, nodes);
+    free(tmp);
+  }
+}
+
 bool slist_join_completed_threads(struct head_s *head) {
   bool is_error = false;
 
   struct node *slist_node = NULL;
-  SLIST_FOREACH(slist_node, head, nodes) {
-    syslog(LOG_DEBUG, "Thread: %ld  Status: %d\r\n", slist_node->thread,
+  struct node *slist_next_node = NULL;
+  SLIST_FOREACH_SAFE(slist_node, head, nodes, slist_next_node) {
+    syslog(LOG_DEBUG, "Thread: %ld  Status: %d", slist_node->thread,
            slist_node->thread_data.thread_status);
 
     switch (slist_node->thread_data.thread_status) {
@@ -120,7 +130,8 @@ bool slist_join_threads(struct head_s *head) {
   bool is_error = false;
 
   struct node *slist_node = NULL;
-  SLIST_FOREACH(slist_node, head, nodes) {
+  struct node *slist_next_node = NULL;
+  SLIST_FOREACH_SAFE(slist_node, head, nodes, slist_next_node) {
     const int pthread_join_result = pthread_join(slist_node->thread, NULL);
     if (pthread_join_result != 0) {
       is_error = true;
@@ -129,7 +140,6 @@ bool slist_join_threads(struct head_s *head) {
       syslog(LOG_DEBUG, "Thread joined for client %d.",
              slist_node->thread_data.client_fd);
     }
-
     SLIST_REMOVE(head, slist_node, node, nodes);
     free(slist_node);
   }
@@ -148,7 +158,6 @@ void timespec_add(const struct timespec *lhs, const struct timespec *rhs,
     result->tv_nsec -= 1000000000L;
   }
 }
-
 
 bool timespec_is_elapsed(const struct timespec *end_time,
                          const struct timespec *current_time) {

@@ -57,6 +57,11 @@ int daemonize(void);
 int read_line_from_stream(FILE *stream, char **line, size_t *line_len);
 
 /**
+ * @brief Frees all elements from the linked list `head`.abort
+ */
+void slist_free(struct head_s *head);
+
+/**
  * @brief Joins any thread in the linked list `head` that is complete.
  * @return true if successful
  * @return false otherwise

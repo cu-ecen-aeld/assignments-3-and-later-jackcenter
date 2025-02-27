@@ -68,7 +68,7 @@ static int setup_socket_server(const bool execute_as_daemon, int *server_socket,
  * @return 0 if successful
  * @return 1 otherwise
  */
-static int setup_signal_handlers(void);
+static int setup_signal_handlers(timer_t *sugusr1_timer);
 
 /**
  * @brief Intended to be run in a thread. Completes the data transfer from the
@@ -98,6 +98,7 @@ static void sigusr1_handler(int sig);
 
 int main(int argc, char *argv[]) {
   openlog("aesdsocket", LOG_PID, LOG_USER);
+  syslog(LOG_DEBUG, "Starting `aesdsocket`.");
 
   // Parse Arguments
   bool execute_as_daemon = false;
@@ -122,8 +123,10 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  if (setup_signal_handlers()) {
+  timer_t log_timestamp_timer;
+  if (setup_signal_handlers(&log_timestamp_timer)) {
     syslog(LOG_ERR, "setup_signal_handlers");
+    timer_delete(log_timestamp_timer);
     close(server_socket);
     freeaddrinfo(server_addrinfo);
     closelog();
@@ -136,6 +139,7 @@ int main(int argc, char *argv[]) {
       pthread_create(&timestamp_thread_id, NULL, log_timestamp_worker, NULL);
   if (pthread_create_result) {
     syslog(LOG_ERR, "pthread_create returned error: %d", pthread_create_result);
+    timer_delete(log_timestamp_timer);
     close(server_socket);
     freeaddrinfo(server_addrinfo);
     closelog();
@@ -145,6 +149,7 @@ int main(int argc, char *argv[]) {
   // Initialize result file mutex
   if (pthread_mutex_init(config_get_result_file_mutex(), NULL)) {
     perror("pthread_mutex_init");
+    timer_delete(log_timestamp_timer);
     close(server_socket);
     freeaddrinfo(server_addrinfo);
     closelog();
@@ -163,14 +168,17 @@ int main(int argc, char *argv[]) {
 
   // Clean up
   pthread_mutex_destroy(config_get_result_file_mutex());
+  timer_delete(log_timestamp_timer);
   close(server_socket);
   freeaddrinfo(server_addrinfo);
+  syslog(LOG_DEBUG, "`aesdsocket` complete.");
   closelog();
   return result;
 }
 
 int application(const int server_fd) {
-  syslog(LOG_DEBUG, "Starting `aesdsocket`.");
+  syslog(LOG_DEBUG, "Starting `aesdsocket` application.");
+  int application_result = 0;
 
   // Initialize a queue
   struct head_s head;
@@ -186,20 +194,24 @@ int application(const int server_fd) {
     switch (connection_result) {
     case -1: // error
       syslog(LOG_ERR, "create_client_connection");
+      application_result = -1;
       close(client_socket);
-      return -1;
+      config_set_is_terminated();
+      continue;
     case 0: // connection created
       break;
     case 1: // external termination
       continue;
     case 2: { // connection timeout
-      if (!slist_join_completed_threads(&head)) {
+      if (slist_join_completed_threads(&head)) {
         syslog(LOG_ERR, "close_completed_threads");
+        application_result = -1;
+        config_set_is_terminated();
       }
       continue;
     }
     default:
-      syslog(LOG_ERR,
+      syslog(LOG_WARNING,
              "Unknown return code (%d) from `create_client_connection`",
              connection_result);
       continue;
@@ -215,12 +227,14 @@ int application(const int server_fd) {
     const int pthread_create_result =
         pthread_create(&thread_id, NULL, data_transfer_worker,
                        (void *)&(slist_data->thread_data));
-    if (pthread_create_result != 0) {
+    if (pthread_create_result) {
       syslog(LOG_ERR, "pthread_create returned error: %d",
              pthread_create_result);
+      application_result = -1;
       free(slist_data);
       close(client_socket);
-      return -1;
+      config_set_is_terminated();
+      continue;
     }
 
     // Add thread to linked list
@@ -229,8 +243,12 @@ int application(const int server_fd) {
   }
 
   // Wait for all threads to join
-  slist_join_threads(&head);
-  return 0;
+  if (slist_join_threads(&head)) {
+    application_result = -1;
+  }
+
+  slist_free(&head);
+  return application_result;
 }
 
 int setup_socket_server(const bool execute_as_daemon, int *server_socket,
@@ -249,7 +267,7 @@ int setup_socket_server(const bool execute_as_daemon, int *server_socket,
       syslog(LOG_ERR, "daemonize");
       return -1;
     case 1:
-      return 1;
+      exit(EXIT_SUCCESS);
     default:
     }
   }
@@ -257,7 +275,7 @@ int setup_socket_server(const bool execute_as_daemon, int *server_socket,
   return 0;
 }
 
-int setup_signal_handlers(void) {
+int setup_signal_handlers(timer_t *sugusr1_timer) {
   // Register SIGINT handler
   if (signal(SIGINT, sigint_handler) == SIG_ERR) {
     perror("signal");
@@ -270,19 +288,24 @@ int setup_signal_handlers(void) {
     return -1;
   }
 
-  // Initialize clock in the child (if daemonized) with a 10s loop
-  struct sigaction sigusr1_sa;
-  sigusr1_sa.sa_handler = sigusr1_handler;
-  sigemptyset(&sigusr1_sa.sa_mask);
-  sigaction(SIGUSR1, &sigusr1_sa, NULL);
+  if (signal(SIGUSR1, sigusr1_handler) == SIG_ERR) {
+    perror("signal");
+    return -1;
+  }
 
-  timer_t log_timestamp_timer;
+  // Initialize clock in the child (if daemonized) with a 10s loop
+  if (sem_init(config_get_timestamp_semaphore(), 0 /* shared between threads */,
+               0)) {
+    perror("sem_init");
+    return -1;
+  }
 
   struct sigevent evp;
-  evp.sigev_value.sival_ptr = &log_timestamp_timer;
+  evp.sigev_value.sival_ptr = sugusr1_timer;
   evp.sigev_notify = SIGEV_SIGNAL;
   evp.sigev_signo = SIGUSR1;
-  if (timer_create(CLOCK_MONOTONIC, &evp, &log_timestamp_timer)) {
+
+  if (timer_create(CLOCK_MONOTONIC, &evp, sugusr1_timer)) {
     perror("timer_create");
     return -1;
   }
@@ -293,14 +316,8 @@ int setup_signal_handlers(void) {
   timestamp_log_itimespec.it_value.tv_sec = TIMESTAMP_LOG_INTERVAL_S;
   timestamp_log_itimespec.it_value.tv_nsec = 0;
 
-  if (timer_settime(log_timestamp_timer, 0, &timestamp_log_itimespec, NULL)) {
+  if (timer_settime(*sugusr1_timer, 0, &timestamp_log_itimespec, NULL)) {
     perror("timer_settime");
-    return -1;
-  }
-
-  if (sem_init(config_get_timestamp_semaphore(), 0 /* shared between threads */,
-               0)) {
-    perror("sem_init");
     return -1;
   }
 
