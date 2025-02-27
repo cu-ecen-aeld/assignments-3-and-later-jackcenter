@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@ struct head_s {
 };
 
 bool is_terminated = false;
+sem_t timestamp_sem;
 
 /**
  * @brief Runs the socket application. This application sets up a server that
@@ -147,6 +149,12 @@ static int send_file(char *file, const int client_fd);
 static void sigint_handler(int sig);
 
 /**
+ * @brief SIGUSR1 signal handler used to handle timestamp logging events
+ * @param sig signal number
+ */
+static void sigusr1_handler(int sig);
+
+/**
  * @brief Intended to be run in a thread. Completes the data transfer from the
  * client passed in `arg`. Data from the client is recieved and written to file,
  * then the entire contents of the file are sent back to the client.
@@ -179,6 +187,12 @@ bool join_completed_threads(struct head_s *head);
  * @return false otherwise
  */
 bool join_threads(struct head_s *head);
+
+/**
+ * @brief Writes a timestamp in RFC 2822 complient format to `RESULT_FILE`
+ * triggered by the `timestamp_sem`. This is inteneded to be run in a thread.
+ */
+static void *log_timestamp_worker(void *arg);
 
 int main(int argc, char *argv[]) {
   openlog("aesdsocket", LOG_PID, LOG_USER);
@@ -218,18 +232,74 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // Handle daemon execution if selected
+  // Handle daemon execution if selected. Must be done after socket is setup
   if (execute_as_daemon) {
     const int daemon_resut = daemonize();
     switch (daemon_resut) {
     case -1:
       syslog(LOG_ERR, "daemonize");
       close(server_socket);
+      freeaddrinfo(server_addrinfo);
       return -1;
     case 1:
+      close(server_socket);
+      freeaddrinfo(server_addrinfo);
       exit(EXIT_SUCCESS);
     default:
     }
+  }
+
+  // Initialize clock in the child (if daemonized) with a 10s loop
+  struct sigaction sigusr1_sa;
+  sigusr1_sa.sa_handler = sigusr1_handler;
+  sigemptyset(&sigusr1_sa.sa_mask);
+  sigaction(SIGUSR1, &sigusr1_sa, NULL);
+
+  timer_t log_timestamp_timer;
+
+  struct sigevent evp;
+  evp.sigev_value.sival_ptr = &log_timestamp_timer;
+  evp.sigev_notify = SIGEV_SIGNAL;
+  evp.sigev_signo = SIGUSR1;
+  if (timer_create(CLOCK_MONOTONIC, &evp, &log_timestamp_timer)) {
+    perror("timer_create");
+    close(server_socket);
+    freeaddrinfo(server_addrinfo);
+    closelog();
+    return -1;
+  }
+
+  struct itimerspec timestamp_log_itimespec;
+  timestamp_log_itimespec.it_interval.tv_sec = 10;
+  timestamp_log_itimespec.it_interval.tv_nsec = 0;
+  timestamp_log_itimespec.it_value.tv_sec = 10;
+  timestamp_log_itimespec.it_value.tv_nsec = 0;
+
+  if (timer_settime(log_timestamp_timer, 0, &timestamp_log_itimespec, NULL)) {
+    perror("timer_settime");
+    close(server_socket);
+    freeaddrinfo(server_addrinfo);
+    closelog();
+    return -1;
+  }
+
+  if (sem_init(&timestamp_sem, 0 /* shared between threads */, 0)) {
+    perror("sem_init");
+    close(server_socket);
+    freeaddrinfo(server_addrinfo);
+    closelog();
+    return -1;
+  }
+
+  pthread_t timestamp_thread_id;
+  const int pthread_create_result =
+      pthread_create(&timestamp_thread_id, NULL, log_timestamp_worker, NULL);
+  if (pthread_create_result != 0) {
+    syslog(LOG_ERR, "pthread_create returned error: %d", pthread_create_result);
+    close(server_socket);
+    freeaddrinfo(server_addrinfo);
+    closelog();
+    return -1;
   }
 
   // Run the application
@@ -252,18 +322,16 @@ int main(int argc, char *argv[]) {
 
 int application(const int server_fd) {
   syslog(LOG_DEBUG, "Starting `aesdsocket`.");
-  // === (AS6-3) Initialize a clock with a 10 s loop
-  // Write callback function to append timestamp
 
   // Initialize a queue
   struct head_s head;
   SLIST_INIT(&head);
 
   // Loop until termination signal is received
+  const struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
   while (!is_terminated) {
     // Wait for a connection
     int client_socket = 0;
-    struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
     const int connection_result =
         create_client_connection(server_fd, &client_socket, &timeout);
     switch (connection_result) {
@@ -550,7 +618,10 @@ int send_file(char *file, const int client_fd) {
 void sigint_handler(int sig) {
   syslog(LOG_DEBUG, "termination signal received");
   is_terminated = true;
+  sem_post(&timestamp_sem);
 }
+
+static void sigusr1_handler(int sig) { sem_post(&timestamp_sem); }
 
 void *data_transfer(void *arg) {
   ThreadData *thread_data = (ThreadData *)(arg);
@@ -668,4 +739,35 @@ bool join_threads(struct head_s *head) {
   }
 
   return is_error;
+}
+
+void *log_timestamp_worker(void *arg) {
+  // Initial wait for first timestamp write
+  sem_wait(&timestamp_sem);
+  while (!is_terminated) {
+    struct timespec log_timestamp;
+    clock_gettime(CLOCK_REALTIME, &log_timestamp);
+
+    struct tm timestamp_info;
+    if (localtime_r(&log_timestamp.tv_sec, &timestamp_info) == NULL) {
+      syslog(LOG_ERR, "localtime_r");
+      continue;
+    }
+
+    // write time
+    char time_string[128];
+    if (strftime(time_string, sizeof(time_string),
+                 "timestamp:%a, %d %b %Y %H:%M:%S %z", &timestamp_info) == 0) {
+      syslog(LOG_ERR, "stfrtime");
+      continue;
+    }
+    strcat(time_string, "\n");
+    append_to_file(RESULT_FILE, time_string, strlen(time_string));
+
+    // Subsequent wait. This allows is_terminated to be set then the semaphore
+    // to be posted to quickly rejoin this thread.
+    sem_wait(&timestamp_sem);
+  }
+
+  pthread_exit(NULL);
 }
