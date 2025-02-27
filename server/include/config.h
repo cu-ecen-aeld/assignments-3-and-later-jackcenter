@@ -4,8 +4,11 @@
 #define BUFFER_SIZE (1024)
 #define TIMESTAMP_LOG_INTERVAL_S (10)
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <semaphore.h>
+
+pthread_mutex_t *config_get_result_file_mutex(void);
 
 sem_t *config_get_timestamp_semaphore(void);
 

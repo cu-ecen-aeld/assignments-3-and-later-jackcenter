@@ -63,7 +63,6 @@ int socket_client_receive_and_write_data(char *file, const int client_fd) {
   char recv_buffer[BUFFER_SIZE];
   size_t bytes_received = 0;
 
-  // TODO: Could add a timeout here as well
   do {
     bytes_received = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
     if (bytes_received == -1) {

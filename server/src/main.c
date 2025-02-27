@@ -1,3 +1,15 @@
+/**
+ * TODO: (low-priority) socket_client_receive_and_write_data could use a timeout
+ * incase the client opens the connection but never sends any data
+ * TODO: (high-priority) socket_client_receive_and_write_data should read data
+ * into the heap and use realloc if the buffer is too small. By doing this the
+ * file would only need to be openned for long enough to write that heap buffer
+ * instead of being openned repeatedly with the stack buffer. This would also
+ * result in the mutex being locked for a shorter duration. Right now if a
+ * client opens a connection and doesn't send data, the mutex lock will block
+ * all other threads indefinitley.
+ */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -130,6 +142,14 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  // Initialize result file mutex
+  if (pthread_mutex_init(config_get_result_file_mutex(), NULL)) {
+    perror("pthread_mutex_init");
+    close(server_socket);
+    freeaddrinfo(server_addrinfo);
+    closelog();
+    return -1;
+  }
   // Run the application
   const int result = application(server_socket);
 
@@ -142,6 +162,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Clean up
+  pthread_mutex_destroy(config_get_result_file_mutex());
   close(server_socket);
   freeaddrinfo(server_addrinfo);
   closelog();
@@ -213,7 +234,7 @@ int application(const int server_fd) {
 }
 
 int setup_socket_server(const bool execute_as_daemon, int *server_socket,
-                               struct addrinfo **server_addrinfo) {
+                        struct addrinfo **server_addrinfo) {
   // Setup the socket server
   if (socket_server_create(server_socket, server_addrinfo) != 0) {
     syslog(LOG_ERR, "create_server_socket");
@@ -292,21 +313,27 @@ void *data_transfer_worker(void *arg) {
   syslog(LOG_DEBUG, "Thread %ld started for client %d.", pthread_self(),
          thread_data->client_fd);
 
+  pthread_mutex_lock(config_get_result_file_mutex());
   if (socket_client_receive_and_write_data(RESULT_FILE,
                                            thread_data->client_fd) == -1) {
+    pthread_mutex_unlock(config_get_result_file_mutex());
     syslog(LOG_ERR, "receive_data");
     close(thread_data->client_fd);
     thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
+  pthread_mutex_unlock(config_get_result_file_mutex());
 
   // Send the contents of the file back to the client
+  pthread_mutex_lock(config_get_result_file_mutex());
   if (socket_client_send_file(RESULT_FILE, thread_data->client_fd) == -1) {
+    pthread_mutex_unlock(config_get_result_file_mutex());
     syslog(LOG_ERR, "send_file");
     close(thread_data->client_fd);
     thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
+  pthread_mutex_unlock(config_get_result_file_mutex());
 
   close(thread_data->client_fd);
   thread_data->thread_status = SUCCEEDED;
@@ -334,7 +361,12 @@ void *log_timestamp_worker(void *arg) {
       continue;
     }
     strcat(time_string, "\n");
-    append_to_file(RESULT_FILE, time_string, strlen(time_string));
+
+    pthread_mutex_lock(config_get_result_file_mutex());
+    if (append_to_file(RESULT_FILE, time_string, strlen(time_string))) {
+      syslog(LOG_ERR, "append_to_file");
+    }
+    pthread_mutex_unlock(config_get_result_file_mutex());
 
     // Subsequent wait. This allows is_terminated to be set then the semaphore
     // to be posted to quickly rejoin this thread.
