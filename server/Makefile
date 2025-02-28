@@ -1,4 +1,4 @@
-TARGET_EXEC := aesdsocket
+TARGET ?= aesdsocket
 
 BUILD_DIR := ./build
 TGT_DIR := ./
@@ -8,14 +8,15 @@ INC_DIR := ./include
 SRCS := $(wildcard $(SRC_DIR)/*.c)	# Find all c files
 OBJS := $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)	# make object files for all c files 
 
-cc = ($CROSS_COMPILE)gcc
-CFLAGS = -g -Wall -Werror -O0 -I$(INC_DIR)
+CC ?= $(CROSS_COMPILE)gcc
+LDFLAGS ?=
+CFLAGS ?= -g -Wall -Werror -O0 -I$(INC_DIR)
 
-all: $(TGT_DIR)/$(TARGET_EXEC)
+all: $(TGT_DIR)/$(TARGET)
 
 # Target to build final executable
-$(TGT_DIR)/$(TARGET_EXEC): $(OBJS)
-	$(CC) $(OBJS) -o $@
+$(TGT_DIR)/$(TARGET): $(OBJS)
+	$(CC) $(OBJS) $(LDFLAGS) -o $@
 
 # Target to build the object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
