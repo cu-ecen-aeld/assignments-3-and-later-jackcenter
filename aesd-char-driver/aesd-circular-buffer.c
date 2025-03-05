@@ -11,10 +11,52 @@
 #ifdef __KERNEL__
 #include <linux/string.h>
 #else
+#include <assert.h>
+#include <stddef.h>
 #include <string.h>
+
+#include <stdio.h>
+
 #endif
 
 #include "aesd-circular-buffer.h"
+
+/**
+ * @brief returns the next index in the circular buffer while accounting for
+ * wrap-around.
+ * @param index the current index
+ * @return the next index
+ */
+static size_t next_idx(const size_t index) {
+  return (index + 1) >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED ? 0
+                                                                : (index + 1);
+}
+
+/**
+ * @brief returns true if the `buffer` is empty.
+ */
+static bool is_empty(struct aesd_circular_buffer *buffer) {
+  return (!buffer->full) && (buffer->in_offs == buffer->out_offs);
+}
+
+/**
+ * @brief returns the `buffer` entry offset from the `out_offs` by `offset`.
+ * This does not move the `out_offs` index.
+ */
+static struct aesd_buffer_entry *peek(struct aesd_circular_buffer *buffer,
+                                      const size_t offset) {
+  if (is_empty(buffer)) {
+    return NULL;
+  }
+
+  if (offset >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+    printf("Warning: `offset` exceeds buffer size\r\n");
+  }
+
+  const size_t peek_idx =
+      (buffer->out_offs + offset) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+  return &(buffer->entry[peek_idx]);
+}
 
 /**
  * @param buffer the buffer to search for corresponding offset.  Any necessary
@@ -33,9 +75,29 @@
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
     struct aesd_circular_buffer *buffer, size_t char_offset,
     size_t *entry_offset_byte_rtn) {
-  /**
-   * TODO: implement per description
-   */
+
+  size_t current_char_offset = 0; // Keeps track of total bytes searched
+  for (size_t peek_idx = 0; peek_idx < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+       ++peek_idx) {
+    // Loop through the circular buffer starting with the `out` idx.
+    struct aesd_buffer_entry *current_entry = peek(buffer, peek_idx);
+    if (current_entry == NULL) {
+      return NULL;
+    }
+
+    const size_t current_max_offset =
+        current_char_offset + (current_entry->size - 1);
+    if (current_max_offset >= char_offset) {
+      // This entry contains the requested offset
+      size_t buffer_idx = char_offset - current_char_offset;
+      *entry_offset_byte_rtn = buffer_idx;
+      return current_entry;
+    }
+
+    current_char_offset += current_entry->size;
+  }
+
+  // Not enough data
   return NULL;
 }
 
@@ -49,9 +111,27 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
  */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
                                     const struct aesd_buffer_entry *add_entry) {
-  /**
-   * TODO: implement per description
-   */
+  assert(buffer);
+  assert(add_entry);
+
+  // Don't add an empty buffer entry
+  if (add_entry->size == 0) {
+    return;
+  }
+
+  // Add `add_entry` to `buffer`
+  memcpy(&buffer->entry[buffer->in_offs], add_entry, sizeof(*add_entry));
+
+  // Increment the `in` pointer accounting for wrap-around
+  buffer->in_offs = next_idx(buffer->in_offs);
+
+  if (buffer->full) {
+    // If the buffer was already full, increment the `out` pointer too
+    buffer->out_offs = buffer->in_offs;
+  } else if (buffer->in_offs == buffer->out_offs) {
+    // If `in` pointer equals `out` pointer, then the buffer is now full
+    buffer->full = true;
+  }
 }
 
 /**
