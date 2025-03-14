@@ -26,18 +26,39 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+static int aesd_open(struct inode *inode, struct file *filp);
+static int aesd_release(struct inode *inode, struct file *filp);
+static ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
+                         loff_t *f_pos);
+static ssize_t aesd_write(struct file *filp, const char __user *buf,
+                          size_t count, loff_t *f_pos);
+static int aesd_setup_cdev(struct aesd_dev *dev);
+static int aesd_init_module(void);
+static void aesd_cleanup_module(void);
+
+struct file_operations aesd_fops = {
+    .owner = THIS_MODULE,
+    .read = aesd_read,
+    .write = aesd_write,
+    .open = aesd_open,
+    .release = aesd_release,
+};
+
 int aesd_open(struct inode *inode, struct file *filp) {
   PDEBUG("open");
-  /**
-   * TODO: handle open
-   */
+  // Retrive `aesd_dev` based on position of cdev
+  struct aesd_dev *device = container_of(inode->i_cdev, struct aesd_dev, cdev);
+
+  // Set file `private_data` to our device structure pointer
+  filp->private_data = device;
+
   return 0;
 }
 
 int aesd_release(struct inode *inode, struct file *filp) {
   PDEBUG("release");
   /**
-   * TODO: handle release
+   * TODO: handle release (deallocate anything `aesd_open` allocated)
    */
   return 0;
 }
@@ -59,15 +80,22 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
   /**
    * TODO: handle write
    */
-  return retval;
+  char temp[count];
+
+  /**
+   * If the return value from copy_from_user is less than 0, there was an error.
+   * Otherwise it is the number of bytes not copied.
+   */
+  const ssize_t retval = copy_from_user(temp, buf, count);
+  if (retval < 0) {
+    // copy_from_user returned an error
+    return retval;
+  }
+
+  const size_t bytes_copied = count - retval;
+
+  return bytes_copied;
 }
-struct file_operations aesd_fops = {
-    .owner = THIS_MODULE,
-    .read = aesd_read,
-    .write = aesd_write,
-    .open = aesd_open,
-    .release = aesd_release,
-};
 
 static int aesd_setup_cdev(struct aesd_dev *dev) {
   int err, devno = MKDEV(aesd_major, aesd_minor);
@@ -93,9 +121,7 @@ int aesd_init_module(void) {
   }
   memset(&aesd_device, 0, sizeof(struct aesd_dev));
 
-  /**
-   * TODO: initialize the AESD specific portion of the device
-   */
+  aesd_circular_buffer_init(&(aesd_device.circular_buffer));
 
   result = aesd_setup_cdev(&aesd_device);
 
@@ -113,6 +139,13 @@ void aesd_cleanup_module(void) {
   /**
    * TODO: cleanup AESD specific poritions here as necessary
    */
+
+  // Free any entries in the circular buffer.
+  uint8_t index;
+  struct aesd_buffer_entry *entry;
+  AESD_CIRCULAR_BUFFER_FOREACH(entry, &(aesd_device.circular_buffer), index) {
+    kfree(entry->buffptr);
+  }
 
   unregister_chrdev_region(devno, 1);
 }

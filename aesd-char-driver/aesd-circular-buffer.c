@@ -50,7 +50,8 @@ static struct aesd_buffer_entry *peek(struct aesd_circular_buffer *buffer,
   }
 
   if (offset >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
-    printf("Warning: `offset` exceeds buffer size\r\n");
+    // TODO: update print
+    // printf("Warning: `offset` exceeds buffer size\r\n");
   }
 
   const size_t peek_idx =
@@ -111,8 +112,9 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(
  */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
                                     const struct aesd_buffer_entry *add_entry) {
-  assert(buffer);
-  assert(add_entry);
+  // TODO: check these some other way
+  // assert(buffer);
+  // assert(add_entry);
 
   // Don't add an empty buffer entry
   if (add_entry->size == 0) {
