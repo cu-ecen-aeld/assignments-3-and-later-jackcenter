@@ -65,34 +65,66 @@ int aesd_release(struct inode *inode, struct file *filp) {
 
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                   loff_t *f_pos) {
-  ssize_t retval = 0;
   PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
-  /**
-   * TODO: handle read
-   */
-  return retval;
+
+  struct aesd_dev *dev_ptr = (struct aesd_dev *)(filp->private_data);
+
+  size_t byte_rtn = 0;
+  const struct aesd_buffer_entry *buffer_entry =
+      aesd_circular_buffer_find_entry_offset_for_fpos(
+          &(dev_ptr->circular_buffer), (size_t)(*f_pos), &byte_rtn);
+  if (buffer_entry == NULL) {
+    PDEBUG("No `buffer_entry` at the requested offset: %lu", *f_pos);
+    return 0;
+  }
+
+  size_t bytes_to_copy = min(count, buffer_entry->size);
+  PDEBUG("Reading %lu bytes", bytes_to_copy);
+
+  const ssize_t bytes_not_written =
+      copy_to_user(buf, buffer_entry->buffptr, bytes_to_copy);
+  PDEBUG("Bytes not written: %lu", bytes_written);
+
+  const size_t bytes_written = bytes_to_copy - bytes_not_written;
+  *f_pos += bytes_written;
+
+  return bytes_written;
 }
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                    loff_t *f_pos) {
-  ssize_t retval = -ENOMEM;
   PDEBUG("write %zu bytes with offset %lld", count, *f_pos);
-  /**
-   * TODO: handle write
-   */
-  char temp[count];
+
+  /** Allocate memory to store user data */
+  char *buffptr = kmalloc(count, GFP_KERNEL);
+  if (!buffptr) {
+    return -ENOMEM; // Memory allocation failure
+  }
 
   /**
    * If the return value from copy_from_user is less than 0, there was an error.
    * Otherwise it is the number of bytes not copied.
    */
-  const ssize_t retval = copy_from_user(temp, buf, count);
+  const ssize_t retval = copy_from_user(buffptr, buf, count);
   if (retval < 0) {
-    // copy_from_user returned an error
+    PDEBUG("`copy_from_user` returned %ld", retval);
+    kfree(buffptr);
     return retval;
   }
 
+  // TODO: If bytes copied does not equal the count, then store the data for later?
   const size_t bytes_copied = count - retval;
+
+  struct aesd_dev *dev_ptr = (struct aesd_dev *)(filp->private_data);
+
+  // NOTE: Just assume we got all of the data for now.
+  
+  const struct aesd_buffer_entry buffer_entry = {
+      .buffptr = buffptr,
+      .size = bytes_copied
+  };
+
+  aesd_circular_buffer_add_entry(&(dev_ptr->circular_buffer), &buffer_entry);
 
   return bytes_copied;
 }
