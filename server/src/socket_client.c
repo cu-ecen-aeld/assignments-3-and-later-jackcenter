@@ -103,6 +103,7 @@ int socket_client_send_file(char *file, const int client_fd) {
 }
 
 int socket_client_send_line(const int client_fd, char *line) {
+  syslog(LOG_INFO, "Sending size (%lu):  %s", strlen(line), line);
   size_t bytes_sent = send(client_fd, line, strlen(line), 0);
   if (bytes_sent == -1) {
     perror("send");
