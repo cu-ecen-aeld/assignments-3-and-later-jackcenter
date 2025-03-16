@@ -90,7 +90,8 @@ int socket_client_send_file(char *file, const int client_fd) {
   char *line = malloc(line_len);
   ssize_t bytes_read = read(fd, line, line_len);
   while (bytes_read != 0) {
-    if (socket_client_send_line(client_fd, line)) {
+    syslog(LOG_INFO, "Read bytes: %ld", bytes_read);
+    if (socket_client_send_line(client_fd, line, bytes_read)) {
       syslog(LOG_ERR, "socket_client_send_line send");
       return -1;
     }
@@ -102,15 +103,15 @@ int socket_client_send_file(char *file, const int client_fd) {
   return 0;
 }
 
-int socket_client_send_line(const int client_fd, char *line) {
-  syslog(LOG_INFO, "Sending size (%lu):  %s", strlen(line), line);
-  size_t bytes_sent = send(client_fd, line, strlen(line), 0);
+int socket_client_send_line(const int client_fd, char *line, const size_t length) {
+  syslog(LOG_INFO, "Sending size (%lu):  %s", length, line);
+  size_t bytes_sent = send(client_fd, line, length, 0);
   if (bytes_sent == -1) {
     perror("send");
     return -1;
   }
 
-  if (bytes_sent != strlen(line)) {
+  if (bytes_sent != length) {
     syslog(LOG_ERR, "partial send");
     return -1;
   }

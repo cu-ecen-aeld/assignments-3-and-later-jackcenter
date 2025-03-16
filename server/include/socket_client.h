@@ -40,6 +40,6 @@ int socket_client_send_file(char *file, const int client_fd);
  * @return 0 if successful
  * @return -1 otherwise
  */
-int socket_client_send_line(const int client_fd, char *line);
+int socket_client_send_line(const int client_fd, char *line, const size_t length);
 
 #endif // SOCKET_CLIENT
