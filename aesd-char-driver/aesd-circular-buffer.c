@@ -116,7 +116,6 @@ aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
   // TODO: check these some other way
   // assert(buffer);
   // assert(add_entry);
-  printk(KERN_DEBUG "aesdchar: " "Idx: %u", buffer->in_offs);
 
   // Don't add an empty buffer entry
   if (add_entry->size == 0) {
