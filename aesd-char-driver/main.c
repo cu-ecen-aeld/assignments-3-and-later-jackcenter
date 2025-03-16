@@ -67,7 +67,7 @@ int aesd_release(struct inode *inode, struct file *filp) {
 
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                   loff_t *f_pos) {
-  
+
   PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
   struct aesd_dev *dev_ptr = (struct aesd_dev *)(filp->private_data);
@@ -116,7 +116,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     }
     dev_ptr->buffer_entry_staging.size = count;
   } else {
-    PDEBUG("Reallocating the staging buffer");
+    PDEBUG("Reallocating the staging buffer from %lu to %lu",
+           dev_ptr->buffer_entry_staging.size,
+           dev_ptr->buffer_entry_staging.size + count);
     dev_ptr->buffer_entry_staging.buffptr =
         krealloc(dev_ptr->buffer_entry_staging.buffptr,
                  dev_ptr->buffer_entry_staging.size + count, GFP_KERNEL);
@@ -128,13 +130,13 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     staging_offset = dev_ptr->buffer_entry_staging.size;
     dev_ptr->buffer_entry_staging.size += count;
   }
+  PDEBUG("Staging buffer size: %lu", dev_ptr->buffer_entry_staging.size);
 
   char *write_ptr = dev_ptr->buffer_entry_staging.buffptr + staging_offset;
   /**
    * If the return value from copy_from_user is less than 0, there was an error.
    * Otherwise it is the number of bytes not copied.
    */
-  PDEBUG("copy_from_user");
   const ssize_t retval = copy_from_user(write_ptr, buf, count);
   if (retval < 0) {
     PDEBUG("`copy_from_user` returned %ld", retval);
@@ -147,34 +149,26 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
   *f_pos += bytes_copied;
 
   // Only write if we have the line termination character
-  PDEBUG("memchr");
-  if (NULL == memchr(write_ptr, '\n', count)) {
+  const char *end_of_line_ptr = memchr(write_ptr, '\n', count);
+  if (NULL == end_of_line_ptr) {
     PDEBUG("Write is incomplete, the termination character was not found.");
     mutex_unlock(&dev_ptr->device_mutex);
     return bytes_copied;
   }
 
-  PDEBUG("aesd_circular_buffer_add_entry");
   const char *replaced_buffptr = aesd_circular_buffer_add_entry(
       &(dev_ptr->circular_buffer), &(dev_ptr->buffer_entry_staging));
 
-  PDEBUG("kfree");
   if (NULL != replaced_buffptr) {
     kfree(replaced_buffptr);
   }
 
   // Clear the staging data
-  // NOTE: I want to set the buffer_entry_staging.buffptr to NULL here since it
-  // should be managed by the circular buffer now, but I couldn't figure out how
-  // to do that without causing a SEGFAULT on shutdown.
-  PDEBUG("clear staging");
   dev_ptr->buffer_entry_staging.buffptr = NULL;
   dev_ptr->buffer_entry_staging.size = 0;
 
-  PDEBUG("mutex_unlock");
   mutex_unlock(&dev_ptr->device_mutex);
 
-  PDEBUG("return");
   return bytes_copied;
 }
 
@@ -219,18 +213,12 @@ void aesd_cleanup_module(void) {
   PDEBUG("aesd_cleanup_module");
   dev_t devno = MKDEV(aesd_major, aesd_minor);
 
-  PDEBUG("2");
   cdev_del(&aesd_device.cdev);
 
-  /**
-   * TODO: cleanup AESD specific poritions here as necessary
-   */
   // Free any entries in the circular buffer.
-  PDEBUG("3");
   uint8_t index;
   struct aesd_buffer_entry *entry;
   AESD_CIRCULAR_BUFFER_FOREACH(entry, &(aesd_device.circular_buffer), index) {
-    PDEBUG("%u", index);
     if (entry->buffptr != NULL) {
       kfree(entry->buffptr);
     }
@@ -240,7 +228,6 @@ void aesd_cleanup_module(void) {
     kfree(aesd_device.buffer_entry_staging.buffptr);
   }
 
-  PDEBUG("4");
   unregister_chrdev_region(devno, 1);
 }
 
