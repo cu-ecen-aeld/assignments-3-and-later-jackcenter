@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stddef.h> // size_t
 #include <stdint.h> // uintx_t
+#include <sys/types.h>
+
 #endif
 
 #define AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED 10
@@ -59,6 +61,13 @@ aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
                                const struct aesd_buffer_entry *add_entry);
 
 void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer);
+
+/**
+ * @return A positive number representing the bytes in the circular buffer which
+ * is the sum of the size of each entry.
+ * @return A negative number on error.
+ */
+ssize_t aesd_circular_buffer_get_size(struct aesd_circular_buffer *buffer);
 
 /**
  * Create a for loop to iterate over each member of the circular buffer.

@@ -10,16 +10,19 @@
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/types.h>
 #else
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include <stdio.h>
 
 #endif
 
 #include "aesd-circular-buffer.h"
+
 
 /**
  * @brief returns the next index in the circular buffer while accounting for
@@ -149,4 +152,21 @@ aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
  */
 void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer) {
   memset(buffer, 0, sizeof(struct aesd_circular_buffer));
+}
+
+ssize_t aesd_circular_buffer_get_size(struct aesd_circular_buffer *buffer) {
+  if (NULL == buffer) {
+    // TODO: log the error
+    return -1;
+  }
+
+  size_t circular_buffer_size = 0;
+
+  uint8_t index;
+  struct aesd_buffer_entry *entry;
+  AESD_CIRCULAR_BUFFER_FOREACH(entry, buffer, index) {
+    circular_buffer_size += entry->size;
+  }
+
+  return circular_buffer_size;
 }
