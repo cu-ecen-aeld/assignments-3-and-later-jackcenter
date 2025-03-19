@@ -23,7 +23,7 @@
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
 
-MODULE_AUTHOR("Jack Center"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Jack Center");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -37,14 +37,48 @@ static ssize_t aesd_write(struct file *filp, const char __user *buf,
 static int aesd_setup_cdev(struct aesd_dev *dev);
 static int aesd_init_module(void);
 static void aesd_cleanup_module(void);
+static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence);
 
-struct file_operations aesd_fops = {
-    .owner = THIS_MODULE,
-    .read = aesd_read,
-    .write = aesd_write,
-    .open = aesd_open,
-    .release = aesd_release,
-};
+struct file_operations aesd_fops = {.owner = THIS_MODULE,
+                                    .read = aesd_read,
+                                    .write = aesd_write,
+                                    .open = aesd_open,
+                                    .release = aesd_release,
+                                    .llseek = aesd_llseek};
+
+static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
+  PDEBUG("llseek with offset %lld", offset);
+
+  struct aesd_dev *dev_ptr = (struct aesd_dev *)(filp->private_data);
+  mutex_lock(&dev_ptr->device_mutex);
+
+  ssize_t circular_buffer_size =
+      aesd_circular_buffer_get_size(&(dev_ptr->circular_buffer));
+  if (circular_buffer_size < 0) {
+    PDEBUG("aesd_circular_buffer_get_size returned an error");
+    mutex_unlock(&dev_ptr->device_mutex);
+    return -EINVAL;
+  }
+
+  const loff_t new_file_position =
+      fixed_size_llseek(filp, offset, whence, (loff_t)circular_buffer_size);
+
+  // TODO: validate new_file_position
+  if (new_file_position < 0) {
+    PDEBUG("seek position (%lld) resulted in a negative value", offset);
+    mutex_unlock(&dev_ptr->device_mutex);
+    return -EINVAL;
+  }
+
+  if (new_file_position > circular_buffer_size) {
+    PDEBUG("seek position (%lld) exceeds circular buffer size", offset);
+    mutex_unlock(&dev_ptr->device_mutex);
+    return -EINVAL;
+  }
+
+  mutex_unlock(&dev_ptr->device_mutex);
+  return new_file_position;
+}
 
 int aesd_open(struct inode *inode, struct file *filp) {
   PDEBUG("open");
