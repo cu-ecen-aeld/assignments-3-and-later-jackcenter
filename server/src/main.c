@@ -161,10 +161,12 @@ int main(int argc, char *argv[]) {
   // Join the timestamp logger
   pthread_join(timestamp_thread_id, NULL);
 
+#if USE_AESD_CHAR_DEVICE != 1
   // Delete the file that is open during the application
   if (remove(RESULT_FILE) && (errno != ENOENT)) {
     perror("remove");
   }
+#endif
 
   // Clean up
   pthread_mutex_destroy(config_get_result_file_mutex());
@@ -379,11 +381,13 @@ void *log_timestamp_worker(void *arg) {
     }
     strcat(time_string, "\n");
 
+#if USE_AESD_CHAR_DEVICE != 1
     pthread_mutex_lock(config_get_result_file_mutex());
     if (append_to_file(RESULT_FILE, time_string, strlen(time_string))) {
       syslog(LOG_ERR, "append_to_file");
     }
     pthread_mutex_unlock(config_get_result_file_mutex());
+#endif
 
     // Subsequent wait. This allows is_terminated to be set then the semaphore
     // to be posted to quickly rejoin this thread.
