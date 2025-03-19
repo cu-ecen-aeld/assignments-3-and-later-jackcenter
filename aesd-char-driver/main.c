@@ -74,7 +74,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
   mutex_lock(&dev_ptr->device_mutex);
 
   size_t byte_rtn = 0;
-
   const struct aesd_buffer_entry *buffer_entry =
       aesd_circular_buffer_find_entry_offset_for_fpos(
           &(dev_ptr->circular_buffer), (size_t)(*f_pos), &byte_rtn);
@@ -84,11 +83,15 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     return 0;
   }
 
-  size_t bytes_to_copy = min(count, buffer_entry->size);
+  // `remaining_bytes` is the number of bytes in the `buffer_entry->buffptr`
+  // after the `byte_rtn`
+  const size_t remaining_bytes = buffer_entry->size - byte_rtn;
+  size_t bytes_to_copy = min(count, remaining_bytes);
   PDEBUG("Reading %lu bytes", bytes_to_copy);
 
+  // TODO: I don't think this coppies right for no-zero offset
   const ssize_t bytes_not_written =
-      copy_to_user(buf, buffer_entry->buffptr, bytes_to_copy);
+      copy_to_user(buf, buffer_entry->buffptr + byte_rtn, bytes_to_copy);
   PDEBUG("Bytes not read: %lu", bytes_not_written);
 
   const size_t bytes_written = bytes_to_copy - bytes_not_written;
