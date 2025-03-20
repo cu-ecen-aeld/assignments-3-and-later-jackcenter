@@ -3,6 +3,8 @@
 
 #include <time.h>
 
+#include "../../aesd-char-driver/aesd_ioctl.h"
+
 /**
  * @brief Creates the client connection
  * @param server_fd server socket file descriptor
@@ -16,13 +18,18 @@ int socket_client_create_connection(const int server_fd, int *client_fd_ptr,
                                     const struct timespec *timeout);
 
 /**
- * @brief Receives data from client and writes to file
+ * @brief Receives data from client and writes to file. If the data is an ioctl
+ * command, `seekto` is filled with commmad data, otherwise `seekto` will be
+ * unmodified.
  * @param file file to send
  * @param client_fd client socket
+ * @param seekto location to store ioctl variables if a command is read.
  * @return 0 if successful
+ * @return 1 if ioctl command was read
  * @return -1 otherwise
  */
-int socket_client_receive_and_write_data(char *file, const int client_fd);
+int socket_client_receive_and_write_data(const int fd, const int client_fd,
+                                         struct aesd_seekto *seekto);
 
 /**
  * @brief Sends the contents of `file` to the `client_fd` one line at a time
@@ -31,7 +38,7 @@ int socket_client_receive_and_write_data(char *file, const int client_fd);
  * @return 0 if successful
  * @return -1 otherwise
  */
-int socket_client_send_file(char *file, const int client_fd);
+int socket_client_send_file(const int fd, const int client_fd);
 
 /**
  * @brief Sends the `line` to the `client_fd`
@@ -40,6 +47,7 @@ int socket_client_send_file(char *file, const int client_fd);
  * @return 0 if successful
  * @return -1 otherwise
  */
-int socket_client_send_line(const int client_fd, char *line, const size_t length);
+int socket_client_send_line(const int client_fd, char *line,
+                            const size_t length);
 
 #endif // SOCKET_CLIENT

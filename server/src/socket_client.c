@@ -10,6 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../aesd-char-driver/aesd_ioctl.h"
+
 #include "config.h"
 #include "utilities.h"
 
@@ -59,7 +61,8 @@ int socket_client_create_connection(const int server_fd, int *client_fd_ptr,
   return 0;
 }
 
-int socket_client_receive_and_write_data(char *file, const int client_fd) {
+int socket_client_receive_and_write_data(const int fd, const int client_fd,
+                                         struct aesd_seekto *seekto) {
   char recv_buffer[BUFFER_SIZE];
   size_t bytes_received = 0;
 
@@ -70,8 +73,19 @@ int socket_client_receive_and_write_data(char *file, const int client_fd) {
       return -1;
     }
 
+    // Check if string is an ioctl command
+    if (is_ioctl_command(recv_buffer)) {
+      syslog(LOG_INFO, "Found ioctl command");
+      if (!get_ioctl_command_from_string(recv_buffer, seekto)) {
+        syslog(LOG_ERR, "get_ioctl_command_from_string");
+        return -1;
+      }
+      
+      return 1;
+    }
+
     // Add data to end of the file
-    if (append_to_file(file, recv_buffer, bytes_received) == -1) {
+    if (append_to_file(fd, recv_buffer, bytes_received) == -1) {
       syslog(LOG_ERR, "append_to_file");
       return -1;
     }
@@ -80,8 +94,7 @@ int socket_client_receive_and_write_data(char *file, const int client_fd) {
   return 0;
 }
 
-int socket_client_send_file(char *file, const int client_fd) {
-  const int fd = open(file, O_RDONLY);
+int socket_client_send_file(const int fd, const int client_fd) {
 
   // TODO: This should be allocated to a size dynamically instead of just
   // setting the size needed to pass the test. This section needed to be
@@ -99,11 +112,11 @@ int socket_client_send_file(char *file, const int client_fd) {
   }
 
   free(line);
-  close(fd);
   return 0;
 }
 
-int socket_client_send_line(const int client_fd, char *line, const size_t length) {
+int socket_client_send_line(const int client_fd, char *line,
+                            const size_t length) {
   syslog(LOG_INFO, "Sending size (%lu):  %s", length, line);
   size_t bytes_sent = send(client_fd, line, length, 0);
   if (bytes_sent == -1) {

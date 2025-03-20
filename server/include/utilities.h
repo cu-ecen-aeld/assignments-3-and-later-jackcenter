@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "../../aesd-char-driver/aesd_ioctl.h"
+
 #include "queue.h"
 
 typedef enum { UNITITIALIZED, RUNNING, SUCCEEDED, FAILED } ThreadStatus;
@@ -28,14 +30,14 @@ struct head_s {
 
 /**
  * @brief Appends the `buffer` to the `file` and creates the file if it doesn't
- * exist
- * @param file file location
+ * exist. Requires caller to pen file.
+ * @param fd file descriptor
  * @param buffer data to write
  * @param buffer_len size of the data in `buffer`
  * @return 0 if successful
  * @return -1 otherwise
  */
-int append_to_file(const char *file, char *buffer, const size_t buffer_len);
+int append_to_file(const int fd, char *buffer, const size_t buffer_len);
 
 /**
  * @brief Sets up the daemon to run the program
@@ -86,5 +88,17 @@ void timespec_add(const struct timespec *lhs, const struct timespec *rhs,
  */
 bool timespec_is_elapsed(const struct timespec *end_time,
                          const struct timespec *current_time);
+
+/**
+ * @brief checks the `string` to determine if it is an ioctl command
+ */
+bool is_ioctl_command(const char *string);
+
+/**
+ * @brief creates an `aesd_seekto` command from the string. Should be checked
+ * with is_ioctl_command() first.
+ */
+bool get_ioctl_command_from_string(const char *string,
+                                   struct aesd_seekto *seekto);
 
 #endif // UTILITIES_H
