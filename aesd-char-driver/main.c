@@ -20,6 +20,9 @@
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/types.h>
+
+#include "aesd_ioctl.h"
+
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
 
@@ -38,13 +41,77 @@ static int aesd_setup_cdev(struct aesd_dev *dev);
 static int aesd_init_module(void);
 static void aesd_cleanup_module(void);
 static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence);
+static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+
+/**
+ * @brief Adjust the file offset `f_pos` parameter of `filp` based on the
+ * location specified by `write_cmd` and `write_cmd_offset`
+ * @return 0 if successful
+ * @return -ERESTARTSYS if mutex could not be obtained
+ * @return -EINVAL if write command or write_cmd_offset was out of range
+ */
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd,
+                                    unsigned int write_cmd_offset);
 
 struct file_operations aesd_fops = {.owner = THIS_MODULE,
                                     .read = aesd_read,
                                     .write = aesd_write,
                                     .open = aesd_open,
                                     .release = aesd_release,
-                                    .llseek = aesd_llseek};
+                                    .llseek = aesd_llseek,
+                                    .unlocked_ioctl = aesd_ioctl};
+
+static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
+  PDEBUG("ioctl with command %u", cmd);
+
+  switch (cmd) {
+  case AESDCHAR_IOCSEEKTO:
+    struct aesd_seekto seekto;
+    if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) !=
+        0) {
+      return -EFAULT;
+    }
+
+    return aesd_adjust_file_offset(filp, seekto.write_cmd,
+                                   seekto.write_cmd_offset);
+
+  default:
+    PDEBUG("unhandled ioctl command: %u", cmd);
+    return -EINVAL;
+  }
+}
+
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd,
+                                    unsigned int write_cmd_offset) {
+  PDEBUG("aesd_adujust_file_offset with index %u and offset %u", write_cmd,
+         write_cmd_offset);
+  struct aesd_dev *dev_ptr = (struct aesd_dev *)(filp->private_data);
+  if (mutex_lock_interruptible(&dev_ptr->device_mutex)) {
+    return -ERESTARTSYS;
+  }
+
+  const struct aesd_buffer_entry *buffer_entry =
+      aesd_circular_buffer_get_entry_by_index(write_cmd,
+                                              &(dev_ptr->circular_buffer));
+  if (NULL == buffer_entry || buffer_entry->size <= write_cmd_offset) {
+    mutex_unlock(&dev_ptr->device_mutex);
+    PDEBUG("No data a requested index (%u) and offset (%u)", write_cmd,
+           write_cmd_offset);
+    return -EINVAL;
+  }
+
+  const ssize_t entry_pos = aesd_circular_buffer_get_entry_offset(
+      buffer_entry, &(dev_ptr->circular_buffer));
+  if (entry_pos < 0) {
+    mutex_unlock(&dev_ptr->device_mutex);
+    return -EINVAL;
+  }
+  mutex_unlock(&dev_ptr->device_mutex);
+
+  const size_t file_offset = entry_pos + write_cmd_offset;
+  filp->f_pos += file_offset;
+  return 0;
+}
 
 static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
   PDEBUG("llseek with offset %lld", offset);

@@ -23,7 +23,6 @@
 
 #include "aesd-circular-buffer.h"
 
-
 /**
  * @brief returns the next index in the circular buffer while accounting for
  * wrap-around.
@@ -124,7 +123,7 @@ aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer,
   if (add_entry->size == 0) {
     return NULL;
   }
-// If the buffer is full, return the buffptr so it can be freed
+  // If the buffer is full, return the buffptr so it can be freed
   const char *replaced_buffptr = NULL;
   if (buffer->full) {
     replaced_buffptr = buffer->entry[buffer->in_offs].buffptr;
@@ -169,4 +168,36 @@ ssize_t aesd_circular_buffer_get_size(struct aesd_circular_buffer *buffer) {
   }
 
   return circular_buffer_size;
+}
+
+const struct aesd_buffer_entry *aesd_circular_buffer_get_entry_by_index(
+    const size_t index, const struct aesd_circular_buffer *buffer) {
+  if (index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+    // Index exceeds buffer size
+    return NULL;
+  }
+
+  if (buffer->entry[index].size == 0) {
+    // No data in that entry
+    return NULL;
+  }
+
+  return &(buffer->entry[index]);
+}
+
+ssize_t aesd_circular_buffer_get_entry_offset(
+    const struct aesd_buffer_entry *entry,
+    const struct aesd_circular_buffer *buffer) {
+
+  ssize_t cumulative_offset = 0;
+  for (size_t i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; ++i) {
+    if (&(buffer->entry[i]) == entry) {
+      return cumulative_offset;
+    }
+
+    cumulative_offset += buffer->entry[i].size;
+  }
+
+  // Never found the entry
+  return -1;
 }

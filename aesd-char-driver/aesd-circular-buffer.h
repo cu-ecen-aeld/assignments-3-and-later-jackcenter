@@ -69,6 +69,13 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer);
  */
 ssize_t aesd_circular_buffer_get_size(struct aesd_circular_buffer *buffer);
 
+const struct aesd_buffer_entry *
+aesd_circular_buffer_get_entry_by_index(const size_t index, const struct aesd_circular_buffer *buffer);
+
+ssize_t aesd_circular_buffer_get_entry_offset(
+    const struct aesd_buffer_entry *entry,
+    const struct aesd_circular_buffer *buffer);
+
 /**
  * Create a for loop to iterate over each member of the circular buffer.
  * Useful when you've allocated memory for circular buffer entries and need to
