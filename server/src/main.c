@@ -27,6 +27,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../aesd-char-driver/aesd_ioctl.h"
+
 #include "config.h"
 #include "queue.h"
 #include "socket_client.h"
@@ -333,26 +335,52 @@ void *data_transfer_worker(void *arg) {
          thread_data->client_fd);
 
   pthread_mutex_lock(config_get_result_file_mutex());
-  if (socket_client_receive_and_write_data(RESULT_FILE,
-                                           thread_data->client_fd) == -1) {
+  int fd = open(RESULT_FILE, O_WRONLY | O_APPEND | O_CREAT,
+                S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+
+  struct aesd_seekto seekto;
+  seekto.write_cmd = 0;
+  seekto.write_cmd_offset = 0;
+  const int data_result =
+      socket_client_receive_and_write_data(fd, thread_data->client_fd, &seekto);
+  if (data_result == -1) {
     pthread_mutex_unlock(config_get_result_file_mutex());
     syslog(LOG_ERR, "receive_data");
+    close(fd);
     close(thread_data->client_fd);
     thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
   pthread_mutex_unlock(config_get_result_file_mutex());
 
+  if (close(fd) == -1) {
+    perror("close");
+  }
+
+  fd = open(RESULT_FILE, O_RDONLY);
+
+  if (data_result == 1) {
+    const int retval = ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto);
+    if (retval) {
+      syslog(LOG_ERR, "ioctl returned: %d", retval);
+    }
+  }
+
   // Send the contents of the file back to the client
   pthread_mutex_lock(config_get_result_file_mutex());
-  if (socket_client_send_file(RESULT_FILE, thread_data->client_fd) == -1) {
+  if (socket_client_send_file(fd, thread_data->client_fd) == -1) {
     pthread_mutex_unlock(config_get_result_file_mutex());
     syslog(LOG_ERR, "send_file");
+    close(fd);
     close(thread_data->client_fd);
     thread_data->thread_status = FAILED;
     pthread_exit(NULL);
   }
   pthread_mutex_unlock(config_get_result_file_mutex());
+
+  if (close(fd) == -1) {
+    perror("close");
+  }
 
   close(thread_data->client_fd);
   thread_data->thread_status = SUCCEEDED;
@@ -382,11 +410,17 @@ void *log_timestamp_worker(void *arg) {
     strcat(time_string, "\n");
 
 #if USE_AESD_CHAR_DEVICE != 1
+    const int fd = open(file, O_WRONLY | O_APPEND | O_CREAT,
+                        S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
     pthread_mutex_lock(config_get_result_file_mutex());
     if (append_to_file(RESULT_FILE, time_string, strlen(time_string))) {
       syslog(LOG_ERR, "append_to_file");
     }
     pthread_mutex_unlock(config_get_result_file_mutex());
+
+    if (close(fd) == -1) {
+      perror("close");
+    }
 #endif
 
     // Subsequent wait. This allows is_terminated to be set then the semaphore

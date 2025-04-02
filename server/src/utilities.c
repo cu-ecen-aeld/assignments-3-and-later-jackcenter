@@ -6,27 +6,24 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "../../aesd-char-driver/aesd_ioctl.h"
+
+#include "config.h"
 #include "queue.h"
 
-int append_to_file(const char *file, char *buffer, const size_t buffer_len) {
-  const int fd = open(file, O_WRONLY | O_APPEND | O_CREAT,
-                      S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+int append_to_file(const int fd, char *buffer, const size_t buffer_len) {
   const ssize_t result = write(fd, buffer, buffer_len);
   if (result == -1) {
     perror("write");
     return -1;
   } else if (result != buffer_len) {
     syslog(LOG_ERR, "partial write");
-    return -1;
-  }
-
-  if (close(fd) == -1) {
-    perror("close");
     return -1;
   }
 
@@ -176,5 +173,38 @@ bool timespec_is_elapsed(const struct timespec *end_time,
 
   // The current_time tv_sec and tv_nsec must be greater than the end_time
   // tv_sec and tv_nsec
+  return true;
+}
+
+bool is_ioctl_command(const char *string) {
+  // TODO: having this defined statically in two places (is_ioctl_command and
+  // handle_ioctl_command_string) is not easy to maintain or scale. These should
+  // be moved into the config if this is ever expanded on.
+  static const char *command_string = "AESDCHAR_IOCSEEKTO:X, Y";
+  static const size_t command_length =
+      19; // chars in the `command_string` exlucding the variables `X` and `Y`
+
+  // Checks first `command_length` chars in the `string to see if this is the
+  // command we are looking for.
+  return (strncmp(string, command_string, command_length) == 0);
+}
+
+bool get_ioctl_command_from_string(const char *string, struct aesd_seekto* seekto) {
+  // TODO: having this defined statically in two places (is_ioctl_command and
+  // handle_ioctl_command_string) is not easy to maintain or scale. These should
+  // be moved into the config if this is ever expanded on.
+  static const size_t command_length =
+      19; // chars in the `command_string` exlucding the variables `X` and `Y`
+
+  unsigned int X = 0;
+  unsigned int Y = 0;
+  int retval = 0;
+  if ((retval = sscanf(string + command_length, "%u, %u", &X, &Y)) != 2) {
+    syslog(LOG_ERR, "sscanf returned (%d) instead of the expected 2", retval);
+    return false;
+  }
+
+  seekto->write_cmd = X;
+  seekto->write_cmd_offset = Y;
   return true;
 }
